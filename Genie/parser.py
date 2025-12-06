@@ -16,10 +16,20 @@ def parse_arguments():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    # Add your arguments here
-    # Example:
-    # parser.add_argument('--input', type=str, help='Input file path')
-    # parser.add_argument('--output', type=str, help='Output file path')
+    # Required arguments
+    parser.add_argument(
+        '-s', '--path_sequences',
+        type=str,
+        required=True,
+        help='Path to the initial sequences file'
+    )
+    
+    parser.add_argument(
+        '-p', '--path_params',
+        type=str,
+        required=True,
+        help='Path to the parameters file'
+    )
     
     args = parser.parse_args()
     return args
