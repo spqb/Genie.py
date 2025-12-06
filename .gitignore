@@ -1,6 +1,14 @@
 # Notebook folder
 notebook/
 
+# Example data and output
+example_data/
+DCA_evolution/
+test_output/
+
+# Source folders (keeping only Genie)
+src/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -35,3 +43,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Bash config
+.bashrc

@@ -31,5 +31,13 @@ def parse_arguments():
         help='Path to the parameters file'
     )
     
+    # Optional arguments
+    parser.add_argument(
+        '-o', '--output',
+        type=str,
+        default='DCA_evolution',
+        help='Path to the output folder (default: DCA_evolution)'
+    )
+    
     args = parser.parse_args()
     return args
