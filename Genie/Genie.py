@@ -4,8 +4,13 @@ Genie 2.0 - Main Application
 import os
 import sys
 import torch
-from adabmDCA import get_tokens, import_from_fasta
-from .parser import parse_arguments
+from adabmDCA import get_tokens, import_from_fasta, load_params
+from .utils.parser import parse_arguments
+from .utils.codon_utils import (
+    build_codon_neighbors, 
+    build_codon_to_index_map,
+    build_amino_to_codons_map
+)
 
 
 def main():
@@ -58,10 +63,36 @@ def main():
     tokens = get_tokens("protein")
     print(f"Alphabet set to protein: {len(tokens)} tokens")
     
+    # Build codon to amino acid index mapping
+    # example: {'GCT': 4, 'GCC': 4, ...}
+    codon_to_amino = build_codon_to_index_map(tokens)
+    
+    # Build amino acid index to codons mapping
+    # example: {4: ['GCT', 'GCC', 'GCA', 'GCG'], ...}
+    amino_to_codons = build_amino_to_codons_map(codon_to_amino)
+    
     # Load sequences from FASTA file
     print(f"Loading sequences from {args.path_sequences}...")
     _, sequences = import_from_fasta(args.path_sequences, tokens, filter_sequences=True)
     print(f"Loaded {len(sequences)} sequences")
+    
+    # Load parameters
+    print(f"Loading parameters from {args.path_params}...")
+    params = load_params(fname=args.path_params, tokens=tokens, device=device, dtype=dtype)
+    print(f"Parameters loaded successfully")
+    print()
+    
+    # Build codon mutation network
+    print("Building codon mutation network...")
+    codon_neighbors, neighbor_counts = build_codon_neighbors()
+    print(f"Codon mutation network built: {len(codon_neighbors)} codons")
+    print()
+
+    # Create list of all codons (all amino acid codons + stop codons)
+    all_codons = [codon for codons in amino_to_codons.values() for codon in codons]
+    all_codons.extend(['TAG', 'TAA', 'TGA'])
+    print(f"Total codons (including stop codons): {len(all_codons)}")
+    print()
     
     # Initialize application with parsed arguments
     # TODO: Add your initialization code here
