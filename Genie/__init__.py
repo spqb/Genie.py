@@ -1,5 +1,5 @@
 # Genie package
-from .Genie import main
+from .main import main
 from .core import evolve_sequences, metropolis_step_batch, gibbs_step_batch
 from .utils import (
     build_codon_neighbors,

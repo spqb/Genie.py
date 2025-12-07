@@ -8,33 +8,35 @@ from .sampling import metropolis_step_batch, gibbs_step_batch
 
 def evolve_sequences(
     chains: torch.Tensor,
-    params: Dict,
-    codon_to_amino: Dict[str, int],
-    amino_to_codons: Dict[int, List[str]],
-    codon_neighbors: Dict[str, Dict[int, List[str]]],
-    neighbor_counts: Dict[Tuple[str, int], int],
+    dna_chains: torch.Tensor,
+    params: Dict[str, torch.Tensor],
+    codon_neighbor_tensor: torch.Tensor,
+    mutation_lookup: torch.Tensor,
+    num_options: torch.Tensor,
     p: float = 0.5,
     device: torch.device = None,
-    dtype: torch.dtype = torch.float32
-) -> torch.Tensor:
+    dtype: torch.dtype = torch.float32,
+    beta: float = 1.0
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Evolve a set of sequences using Metropolis and Gibbs sampling.
     
     Optimized for GPU execution with millions of iterations.
     
     Args:
-        chains: Tensor of sequences to evolve (n_chains, seq_length)
-        params: DCA model parameters
-        codon_to_amino: Dictionary mapping codons to amino acid indices
-        amino_to_codons: Dictionary mapping amino acid indices to codon lists
-        codon_neighbors: Dictionary of codon nearest neighbors
-        neighbor_counts: Dictionary of neighbor counts per codon position
+        chains: One-hot encoded amino acid sequences (n_chains, seq_length, q)
+        dna_chains: DNA sequences as codon indices (n_chains, seq_length)
+        params: DCA model parameters with bias and coupling_matrix
+        codon_neighbor_tensor: Pre-computed neighbor accessibility (num_codons, 3, q)
+        mutation_lookup: Pre-computed codon mutations (num_codons, 3, q, max_neighbors)
+        num_options: Count of valid options (num_codons, 3, q)
         p: Float probability threshold for Metropolis vs Gibbs selection
         device: Torch device (CPU/GPU)
         dtype: Torch data type
+        beta: Inverse temperature for Gibbs sampling
     
     Returns:
-        Tensor: Evolved sequences in the same order as input
+        Tuple of (evolved amino acid chains, evolved DNA chains)
     """
     n_chains = chains.shape[0]
     
@@ -42,32 +44,41 @@ def evolve_sequences(
     random_values = torch.rand(n_chains, device=device)
     
     # Create boolean mask for Metropolis vs Gibbs
-    metropolis_mask = random_values < p
+    gibbs_mask = random_values > p
     
     # Get indices for each method
-    metropolis_indices = torch.where(metropolis_mask)[0]
-    gibbs_indices = torch.where(~metropolis_mask)[0]
+    gibbs_indices = torch.where(gibbs_mask)[0]
+    metropolis_indices = torch.where(~gibbs_mask)[0]
     
     # Clone chains to avoid in-place modifications
     evolved_chains = chains.clone()
+    evolved_dna_chains = dna_chains.clone()
     
     # Process Metropolis chains in batch if any exist
     if metropolis_indices.numel() > 0:
-        metropolis_chains = chains[metropolis_indices]
-        evolved_metropolis = metropolis_step_batch(
-            metropolis_chains, params, codon_to_amino, amino_to_codons,
-            codon_neighbors, neighbor_counts, device, dtype
-        )
-        evolved_chains[metropolis_indices] = evolved_metropolis
+        # TODO: Implement Metropolis sampling
+        # For now, keep chains unchanged
+        pass
     
     # Process Gibbs chains in batch if any exist
     if gibbs_indices.numel() > 0:
         gibbs_chains = chains[gibbs_indices]
-        evolved_gibbs = gibbs_step_batch(
-            gibbs_chains, params, codon_to_amino, amino_to_codons,
-            codon_neighbors, neighbor_counts, device, dtype
+        gibbs_dna_chains = dna_chains[gibbs_indices]
+        
+        evolved_gibbs, evolved_gibbs_dna = gibbs_step_batch(
+            chains=gibbs_chains,
+            dna_chains=gibbs_dna_chains,
+            params=params,
+            codon_neighbor_tensor=codon_neighbor_tensor,
+            mutation_lookup=mutation_lookup,
+            num_options=num_options,
+            device=device,
+            dtype=dtype,
+            beta=beta
         )
+        
         evolved_chains[gibbs_indices] = evolved_gibbs
+        evolved_dna_chains[gibbs_indices] = evolved_gibbs_dna
     
-    return evolved_chains
+    return evolved_chains, evolved_dna_chains
 
