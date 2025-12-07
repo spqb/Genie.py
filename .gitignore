@@ -5,6 +5,8 @@ notebook/
 example_data/
 DCA_evolution/
 test_output/
+docs/
+test_coherence.py
 
 # Source folders (keeping only Genie)
 src/
