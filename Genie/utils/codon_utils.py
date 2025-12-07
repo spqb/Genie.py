@@ -39,13 +39,13 @@ def build_codon_to_index_map(tokens):
         dict: Mapping {codon: index} where index is the position in tokens
     """
     # Create amino acid letter to index mapping
-    aa_to_index = {aa: idx for idx, aa in enumerate(tokens)}
+    aa_to_index = {aa: idx for idx, aa in enumerate(tokens)} # e.g., {'-':0, 'A':1, 'C':2, ...}
     
     # Map each codon to its amino acid index
     codon_to_index = {
         codon: aa_to_index[aa]
-        for codon, aa in CODON_TO_AMINO_LETTER.items()
-    }
+        for codon, aa in CODON_TO_AMINO_LETTER.items() 
+    } # e.g., {'ATA':9, 'ATC':9, 'ATT':9, 'ATG':12, ...}
     
     return codon_to_index
 
@@ -55,10 +55,10 @@ def build_amino_to_codons_map(codon_to_amino):
     Build a mapping from amino acid indices to their corresponding codons.
     
     Args:
-        codon_to_amino: Dictionary mapping codons to amino acid indices
+        codon_to_amino: Dictionary mapping codons to amino acid indices (e.g., {'ATA':9, 'ATC':9, 'ATT':9, 'ATG':12, ...})
     
     Returns:
-        dict: Mapping {amino_index: [codons]} for indices 0-20
+        dict: Mapping {amino_index: [codons]} for indices 0-20 (e.g., 9: ['ATA', 'ATC', 'ATT'], 12: ['ATG'], ...)
     """
     amino_to_codons = {}
     
@@ -99,21 +99,21 @@ def build_codon_neighbors():
     
     # Generate all possible codons using itertools.product for efficiency
     for codon_tuple in product(NUCLEOTIDES, repeat=3):
-        codon = ''.join(codon_tuple)
+        codon = ''.join(codon_tuple)  # e.g., ('A','T','G') -> 'ATG'
         
         # Skip stop codons
-        if codon in STOP_CODONS:
+        if codon in STOP_CODONS: 
             continue
         
         # Build neighbor map for each position
         position_neighbors = {}
         for position in range(3):
             neighbors = [
-                codon[:position] + nucleotide + codon[position + 1:]
+                codon[:position] + nucleotide + codon[position + 1:] # e.g., mutate 'ATG' at pos 0 with 'C' -> 'CTG'
                 for nucleotide in NUCLEOTIDES
                 if nucleotide != codon[position]
                 and codon[:position] + nucleotide + codon[position + 1:] not in STOP_CODONS
-            ]
+            ] # e.g., for 'ATG' at pos 0: ['CTG', 'GTG', 'TTG']
             position_neighbors[position] = neighbors
             neighbor_counts[(codon, position)] = len(neighbors)
         
@@ -144,8 +144,11 @@ def build_codon_neighbor_tensor(
         torch.Tensor: Boolean tensor of shape (num_codons, 3, num_amino_acids)
                      where [i, pos, aa] = True if aa is accessible from codon i at position pos
     """
-    # Create codon to index mapping
+    # Create codon to index mapping - include gap '---' even though it has no neighbors
     all_codons = sorted(codon_neighbors.keys())
+    # Add gap codon if not present (it won't be in codon_neighbors since it can't mutate)
+    if '---' not in all_codons and '---' in codon_to_amino:
+        all_codons = ['---'] + all_codons  # Add gap at the beginning
     codon_to_idx = {codon: idx for idx, codon in enumerate(all_codons)}
     num_codons = len(all_codons)
     
@@ -157,6 +160,15 @@ def build_codon_neighbor_tensor(
     
     # Fill tensor
     for codon, codon_idx in codon_to_idx.items():
+        # Special handling for gap codon - it can only stay as gap (no mutation)
+        if codon not in codon_neighbors:
+            if codon in codon_to_amino:
+                gap_aa = codon_to_amino[codon]
+                # For all positions, gap can only stay as gap
+                for pos in range(3):
+                    neighbor_tensor[codon_idx, pos, gap_aa] = True
+            continue
+        
         for pos in range(3):
             # Get neighbor codons at this position
             neighbor_codons = codon_neighbors[codon].get(pos, [])
@@ -197,8 +209,11 @@ def build_codon_mutation_lookup(
         - codon_to_idx: Dictionary mapping codon strings to indices
         - idx_to_codon: List mapping indices back to codon strings
     """
-    # Create codon mappings
+    # Create codon mappings - include gap '---' even though it has no neighbors
     all_codons = sorted(codon_neighbors.keys())
+    # Add gap codon if not present (it won't be in codon_neighbors since it can't mutate)
+    if '---' not in all_codons and '---' in codon_to_amino:
+        all_codons = ['---'] + all_codons  # Add gap at the beginning
     codon_to_idx = {codon: idx for idx, codon in enumerate(all_codons)}
     num_codons = len(all_codons)
     num_aa = 21  # Including gap
@@ -207,10 +222,13 @@ def build_codon_mutation_lookup(
         device = torch.device('cpu')
     
     # Find maximum number of neighbor options for any (codon, pos, aa) combination
-    max_neighbors = 0
+    max_neighbors = 1  # At least 1 for gap (itself)
     for codon in all_codons:
+        # Skip gap codon - it has no neighbors, only itself
+        if codon not in codon_neighbors:
+            continue
         for pos in range(3):
-            neighbor_codons = codon_neighbors[codon].get(pos, [])
+            neighbor_codons = codon_neighbors[codon].get(pos, []) # e.g., for 'ATG' at pos 0: ['CTG', 'GTG', 'TTG']
             # Group by amino acid
             aa_groups = {}
             for neighbor in neighbor_codons:
@@ -237,6 +255,16 @@ def build_codon_mutation_lookup(
     
     # Fill lookup tensor
     for codon, codon_idx in codon_to_idx.items():
+        # Special handling for gap codon - it can only map to itself (no mutation)
+        if codon not in codon_neighbors:
+            if codon in codon_to_amino:
+                gap_aa = codon_to_amino[codon]
+                # For all positions, gap can only stay as gap
+                for pos in range(3):
+                    num_options[codon_idx, pos, gap_aa] = 1
+                    mutation_lookup[codon_idx, pos, gap_aa, 0] = codon_idx
+            continue
+        
         for pos in range(3):
             neighbor_codons = codon_neighbors[codon].get(pos, [])
             
@@ -296,12 +324,14 @@ def precompute_sampling_tensors(
     num_amino_acids = len(tokens)
     
     # Build codon mappings
-    codon_to_amino = build_codon_to_index_map(tokens)
-    amino_to_codons = build_amino_to_codons_map(codon_to_amino)
+    codon_to_amino = build_codon_to_index_map(tokens) # e.g., {'ATA':9, 'ATC':9, 'ATT':9, 'ATG':12, ...}
+    amino_to_codons = build_amino_to_codons_map(codon_to_amino) # e.g., 9: ['ATA', 'ATC', 'ATT'], 12: ['ATG'], ...
     
     # Build codon neighbor network
+    # codon_neighbors: {codon: {position: [neighbor_codons]}} # e.g., 'ATG': {0: ['CTG', 'GTG', 'TTG'], 1: [...], 2: [...]}
+    # neighbor_counts: {(codon, position): count} # e.g., ('ATG', 0): 3, ('ATG', 1): 3, ('ATG', 2): 3
     codon_neighbors, neighbor_counts = build_codon_neighbors()
-    
+
     # Build GPU tensors for fast sampling
     codon_neighbor_tensor, codon_to_idx, all_codons = build_codon_neighbor_tensor(
         codon_neighbors, 
@@ -315,6 +345,7 @@ def precompute_sampling_tensors(
         codon_to_amino,
         device
     )
+    
     
     return {
         "codon_to_amino": codon_to_amino,

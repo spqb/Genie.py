@@ -56,9 +56,22 @@ def evolve_sequences(
     
     # Process Metropolis chains in batch if any exist
     if metropolis_indices.numel() > 0:
-        # TODO: Implement Metropolis sampling
-        # For now, keep chains unchanged
-        pass
+        metropolis_chains = chains[metropolis_indices]
+        metropolis_dna_chains = dna_chains[metropolis_indices]
+        
+        evolved_metropolis, evolved_metropolis_dna = metropolis_step_batch(
+            chains=metropolis_chains,
+            dna_chains=metropolis_dna_chains,
+            params=params,
+            codon_to_amino=params["codon_to_amino"],
+            all_codons=params["all_codons"],
+            device=device,
+            dtype=dtype,
+            beta=beta
+        )
+        
+        evolved_chains[metropolis_indices] = evolved_metropolis
+        evolved_dna_chains[metropolis_indices] = evolved_metropolis_dna
     
     # Process Gibbs chains in batch if any exist
     if gibbs_indices.numel() > 0:
