@@ -12,7 +12,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "genie=Genie.Genie:main",
+            "genie=Genie.main:main",
         ],
     },
     classifiers=[
