@@ -9,6 +9,10 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "adabmDCA",
+        "torch>=2.0.0",
+        "numpy>=1.20.0",
+        "matplotlib>=3.0.0",
+        "scikit-learn>=1.0.0",
     ],
     entry_points={
         "console_scripts": [

@@ -135,8 +135,11 @@ def gibbs_step_batch(
     dna_chains: torch.Tensor,
     params: Dict[str, torch.Tensor],
     codon_neighbor_tensor: torch.Tensor,
+    codon_neighbor_codon_tensor: torch.Tensor,
     mutation_lookup: torch.Tensor,
     num_options: torch.Tensor,
+    codon_usage: torch.Tensor,
+    codon_to_aa_idx: torch.Tensor,
     device: torch.device,
     dtype: torch.dtype,
     beta: float = 1.0
@@ -153,8 +156,11 @@ def gibbs_step_batch(
             - "bias": Local biases (seq_length, q)
             - "coupling_matrix": Coupling matrix (seq_length, q, seq_length, q)
         codon_neighbor_tensor: Pre-computed neighbor accessibility (num_codons, 3, q)
+        codon_neighbor_codon_tensor: Pre-computed codon neighbor accessibility (num_codons, 3, num_codons)
         mutation_lookup: Pre-computed codon mutations (num_codons, 3, q, max_neighbors)
         num_options: Count of valid options (num_codons, 3, q)
+        codon_usage: Tensor (num_codons,) with codon usage frequencies
+        codon_to_aa_idx: Tensor (num_codons,) mapping codon index to amino acid index
         device: Torch device (CPU/GPU)
         dtype: Torch data type
         beta: Inverse temperature (default: 1.0)
@@ -194,48 +200,135 @@ def gibbs_step_batch(
     coupling_term = torch.bmm(couplings_flat, chains_flat).squeeze(-1)  # (N, q)
     
     # Compute logits for all amino acids
-    logits_full = beta * (biases + coupling_term)  # Shape: (N, q)
+    logits_aa = beta * (biases + coupling_term)  # Shape: (N, q)
     
-    # Build valid amino acid mask (FULLY VECTORIZED)
+    # Get current codons
     current_codon_indices = dna_chains[batch_arange, selected_sites]  # Shape: (N,)
-    valid_aa_mask = codon_neighbor_tensor[current_codon_indices, nucleotide_positions]  # (N, q)
     
-    # Mask invalid amino acids with -inf
-    logits_masked = logits_full.clone()
-    logits_masked[~valid_aa_mask] = float('-inf')
+    # Get valid codon mask using codon_neighbor_codon_tensor
+    # Shape: codon_neighbor_codon_tensor[current_codon, nuc_pos] -> (num_codons,) boolean mask
+    num_codons = codon_neighbor_codon_tensor.shape[0]
+    valid_codon_mask = codon_neighbor_codon_tensor[current_codon_indices, nucleotide_positions]  # (N, num_codons)
     
-    # Sample new amino acids from masked distribution
-    probs = torch.softmax(logits_masked, dim=-1)
-    new_aa_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # Shape: (N,)
+    # Build codon-to-amino-acid mapping tensor (needed to map codon logits to aa logits)
+    # We need to know which amino acid each codon codes for
+    # This can be inferred from codon_neighbor_tensor: for each codon, find which aa it produces
+    # codon_neighbor_tensor[codon_idx, :, :] has shape (3, q)
+    # We can use the pattern: a codon maps to the aa that appears in all 3 positions
+    # Actually, we need to build this from mutation_lookup or pass it explicitly
+    # For now, we'll use a simpler approach: for each valid codon, find its amino acid
+    # by checking which amino acid appears in codon_neighbor_tensor[codon_idx, 0, :]
+    
+    # Get amino acid for each codon by checking position 0 accessibility
+    # A codon codes for the amino acid that is accessible at all positions (0,1,2)
+    # Simpler: use the fact that codon_neighbor_tensor[codon_idx, pos, aa_idx] = True 
+    # means mutating position 'pos' can reach 'aa_idx'
+    # But to get the CURRENT amino acid of a codon, we need different info
+    
+    # Alternative: build codon_to_aa mapping from mutation_lookup
+    # mutation_lookup[codon_idx, nuc_pos, aa_idx, :] contains codons that result from mutation
+    # But we need the inverse: given a codon, what aa does it code for?
+    
+    # Most direct: use the current chains to get the amino acid
+    current_aa_onehot = chains[batch_arange, selected_sites]  # Shape: (N, q)
+    current_aa_indices = current_aa_onehot.argmax(dim=-1)  # Shape: (N,)
+    
+    # Now, for each valid codon, compute its logit
+    # logit_codon[i] = logit_aa[corresponding_aa] * codon_usage[i]
+    # We need to map each codon to its amino acid
+    # Build this mapping: for each codon index, which aa index does it correspond to?
+    
+    # Use codon_neighbor_tensor to infer: a codon at index i produces amino acid j
+    # if starting from that codon and mutating position 0,1,2 can reach different amino acids
+    # But the codon itself encodes one specific amino acid
+    
+    # Better approach: use mutation_lookup in reverse
+    # For each codon c and each position p, mutation_lookup[c, p, :, :] shows reachable codons
+    # The amino acid the codon c itself codes for is not directly stored
+    
+    # Practical solution: build codon_to_aa_idx tensor from codon_neighbor_tensor
+    # For a codon at index c: it codes for amino acid a if all three nucleotide positions
+    # when NOT mutated, correspond to amino acid a
+    # Actually, we can use the fact that chains[batch_arange, selected_sites] gives current aa
+    
+    # Let's build codon_to_aa mapping once (should be precomputed, but we'll do it here)
+    # For each codon, the amino acid it codes for can be found by:
+    # - For position 0: codon_neighbor_tensor[codon_idx, 0, :] shows which aa are accessible
+    # - The codon's own aa is the one that appears when we DON'T mutate
+    # We can infer this from the structure: if we have all_codons list and codon_to_amino dict
+    # But those aren't passed to this function
+    
+    # Workaround: compute codon_to_aa_idx from valid neighbors
+    # For each codon c: codon_neighbor_tensor[c, pos, aa] tells if mutating pos can reach aa
+    # The identity (no mutation) should also be encoded somehow
+    # Actually, codon_neighbor_tensor includes the CURRENT amino acid in accessible set
+    
+    # Simplified approach for now: 
+    # For each batch element, we know current_codon -> current_aa
+    # For valid codons from mutation, we can check mutation_lookup to find their aa
+    
+    # Let's build it differently: 
+    # valid_codon_mask[n, c] = True means codon c is accessible from current_codon[n]
+    # For each accessible codon c, find which aa it codes for
+    # We can use codon_neighbor_tensor: the aa that codon c codes for is the one
+    # where codon_neighbor_tensor[c, pos, aa] might be True for mutations
+    
+    # Most efficient: precompute codon_to_aa_idx as a tensor of shape (num_codons,)
+    # For now, use an approximation: build it from codon_neighbor_tensor
+    # codon_neighbor_tensor[codon_idx, 0, :] gives accessible aa from position 0
+    # The codon's own aa should be inferable
+    
+    # Quick solution: since we're in a batch, for each chain we know current aa
+    # For valid codons, use mutation_lookup to trace back
+    # mutation_lookup[current_codon, nuc_pos, aa_idx, :] contains resulting codons
+    # So if codon c is in mutation_lookup[current_codon, nuc_pos, aa_idx, :], then c codes for aa_idx
+    
+    # Build codon -> aa mapping for valid codons using pre-computed tensor
+    # codon_to_aa_idx[codon_idx] gives the amino acid index for that codon
+    # We need to build (N, num_codons) tensor mapping valid codons to their aa
+    # For each batch element, only codons accessible via mutation are valid
+    
+    # Start with global codon->aa mapping, then mask by valid_codon_mask
+    # Shape: (num_codons,) -> broadcast to (N, num_codons)
+    codon_aa_indices = codon_to_aa_idx.unsqueeze(0).expand(N, -1).clone()  # (N, num_codons)
+    
+    # Mark invalid codons with -1
+    codon_aa_indices[~valid_codon_mask] = -1
+    
+    # Compute logits for each valid codon
+    # logit_codon[n, c] = logit_aa[n, aa_of_c] * log(codon_usage[c])
+    # Use log(codon_usage) to keep logits in log-space
+    log_codon_usage = torch.log(codon_usage + 1e-10)  # Add small epsilon to avoid log(0)
+    
+    # Broadcast: logits_aa[n, aa] -> logits_codon[n, c] based on codon_aa_indices[n, c]
+    # For each (n, c), get logits_aa[n, codon_aa_indices[n, c]]
+    codon_logits = torch.full((N, num_codons), float('-inf'), dtype=dtype, device=device)
+    valid_mask = codon_aa_indices >= 0
+    
+    # Gather aa logits for valid codons
+    # Use advanced indexing: for each valid (n, c), get logits_aa[n, codon_aa_indices[n, c]]
+    batch_indices = batch_arange.unsqueeze(1).expand(-1, num_codons)  # (N, num_codons)
+    aa_indices_for_codons = codon_aa_indices.clone()
+    aa_indices_for_codons[~valid_mask] = 0  # Placeholder for invalid codons
+    
+    gathered_aa_logits = logits_aa[batch_indices, aa_indices_for_codons]  # (N, num_codons)
+    
+    # Compute codon logits: aa_logit + log(codon_usage)
+    codon_logits[valid_mask] = gathered_aa_logits[valid_mask] + log_codon_usage[None, :].expand(N, -1)[valid_mask]
+    
+    # Sample new codon from softmax distribution
+    probs_codon = torch.softmax(codon_logits, dim=-1)  # (N, num_codons)
+    new_codon_indices = torch.multinomial(probs_codon, num_samples=1).squeeze(-1)  # Shape: (N,)
+    
+    # Get corresponding amino acid indices
+    new_aa_indices = codon_aa_indices[batch_arange, new_codon_indices]  # Shape: (N,)
     
     # Create new one-hot residues
     new_residues = torch.nn.functional.one_hot(new_aa_indices, num_classes=q).to(dtype)
     
-    # Update amino acid chains
+    # Update chains
     updated_chains = chains.clone()
     updated_chains[batch_arange, selected_sites] = new_residues
-    
-    # Update DNA chains (FULLY VECTORIZED)
-    # The new codon is determined by: current_codon + mutation at nucleotide_position -> new_aa
-    # mutation_lookup[current_codon, nuc_pos, new_aa] contains the specific codon(s)
-    # that result from mutating nucleotide at position nuc_pos to yield new_aa
-    
-    # Get the valid codon options for each chain
-    # Note: there's typically only 1 option (the specific mutation at that position)
-    # but could be multiple if different nucleotides at that position code for same aa
-    valid_codons = mutation_lookup[current_codon_indices, nucleotide_positions, new_aa_indices]  # (N, max_neighbors)
-    
-    # Get number of options (typically 1, but could be more)
-    counts = num_options[current_codon_indices, nucleotide_positions, new_aa_indices]  # Shape: (N,)
-    
-    # Generate random selection within valid range for each chain (in case multiple options exist)
-    rand_selection = torch.floor(torch.rand(N, device=device) * counts.float()).long()
-    # Clamp element-wise
-    rand_selection = torch.maximum(rand_selection, torch.zeros_like(rand_selection))
-    rand_selection = torch.minimum(rand_selection, counts - 1)
-    
-    # Select the new codon for each chain
-    new_codon_indices = valid_codons[batch_arange, rand_selection]  # Shape: (N,)
     
     # Update DNA chains
     updated_dna_chains = dna_chains.clone()

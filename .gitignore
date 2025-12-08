@@ -49,3 +49,7 @@ Thumbs.db
 
 # Bash config
 .bashrc
+
+# Test files and logs
+run.log
+test_random_init.py

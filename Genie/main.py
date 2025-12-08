@@ -6,6 +6,8 @@ import sys
 import time
 import torch
 import numpy as np
+# import matplotlib
+# matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from adabmDCA import get_tokens, import_from_fasta, load_params
 from adabmDCA.statmech import compute_energy
@@ -68,12 +70,14 @@ def main():
     """
     Main function for the Genie application.
     """
+    start_time_total = time.time()
+    
     # Parse command line arguments
     args = parse_arguments()
     
     # Check if required input files exist
-    if not os.path.isfile(args.path_sequences):
-        print(f"Error: Sequences file not found: {args.path_sequences}", file=sys.stderr)
+    if args.path_chains is not None and not os.path.isfile(args.path_chains):
+        print(f"Error: Sequences file not found: {args.path_chains}", file=sys.stderr)
         sys.exit(1)
     
     if not os.path.isfile(args.path_params):
@@ -102,58 +106,87 @@ def main():
     print()
     print("Configuration:")
     print("-" * 60)
-    print(f"  Sequences file    : {args.path_sequences}")
+    if args.path_chains is not None:
+        print(f"  Sequences file    : {args.path_chains}")
+    else:
+        print(f"  Sequences         : Random initialization")
+        print(f"  Num chains        : {args.num_chains}")
+        print(f"  Sequence length   : auto-detect from DCA params")
     print(f"  Parameters file   : {args.path_params}")
     print(f"  Output folder     : {args.output}")
     print(f"  Device            : {device}")
     print(f"  Data type         : {dtype}")
+    print(f"  P (Metropolis)    : {args.p_metropolis} (Metropolis/Gibbs ratio)")
     print("-" * 60)
     print()
     
     # Set alphabet
+    t0 = time.time()
     tokens = get_tokens("protein")
-    print(f"Alphabet set to protein: {len(tokens)} tokens")
+    print(f"Alphabet set to protein: {len(tokens)} tokens (took {time.time()-t0:.2f}s)")
     
     # Pre-compute all sampling tensors (codon mappings, neighbors, GPU tensors)
     print("Pre-computing sampling tensors...")
+    t0 = time.time()
     sampling_data = precompute_sampling_tensors(tokens, device)
+    elapsed = time.time() - t0
     print(f"  Codon network: {len(sampling_data['codon_neighbors'])} codons")
     print(f"  Neighbor tensor: {sampling_data['codon_neighbor_tensor'].shape}")
     print(f"  Mutation lookup: {sampling_data['mutation_lookup'].shape}")
+    print(f"  (took {elapsed:.2f}s)")
     print()
     
     # Extract commonly used references
     codon_to_amino = sampling_data["codon_to_amino"]
     amino_to_codons = sampling_data["amino_to_codons"]
     
-    # Load sequences from FASTA file
-    print(f"Loading sequences from {args.path_sequences}...")
-    _, sequences = import_from_fasta(args.path_sequences, tokens, filter_sequences=True)
-    print(f"Loaded {len(sequences)} sequences")
-    
-    # Ensure sequences are on the correct device
-    if not isinstance(sequences, torch.Tensor):
-        sequences = torch.tensor(sequences, dtype=torch.long)
-    sequences = sequences.to(device)
-    
-    # Load parameters
+    # Load parameters first to get sequence length
     print(f"Loading parameters from {args.path_params}...")
+    t0 = time.time()
     params = load_params(fname=args.path_params, tokens=tokens, device=device, dtype=dtype)
-    print(f"Parameters loaded successfully")
+    print(f"Parameters loaded successfully (took {time.time()-t0:.2f}s)")
+    
+    # Get sequence length from DCA parameters
+    L_params = params["bias"].shape[0]  # bias shape is (L, q)
+    print(f"  DCA model sequence length: {L_params}")
+    
+    # Load or initialize sequences
+    if args.path_chains is not None:
+        # Load sequences from FASTA file
+        print(f"Loading sequences from {args.path_chains}...")
+        t0 = time.time()
+        _, sequences = import_from_fasta(args.path_chains, tokens, filter_sequences=True)
+        print(f"Loaded {len(sequences)} sequences (took {time.time()-t0:.2f}s)")
+        
+        # Ensure sequences are on the correct device
+        if not isinstance(sequences, torch.Tensor):
+            sequences = torch.tensor(sequences, dtype=torch.long)
+        sequences = sequences.to(device)
+        
+        chains = sequences # Shape: (N, L) - amino acid indices
+        N, L = chains.shape
+        
+        # Verify sequence length matches DCA model
+        if L != L_params:
+            print(f"Warning: Loaded sequences have length {L}, but DCA model expects {L_params}")
+    else:
+        # Initialize random sequences using DCA model length
+        L = L_params
+        N = args.num_chains
+        print(f"Initializing {N} random sequences of length {L}...")
+        # Random initialization excluding gap (token 0)
+        chains = torch.randint(1, len(tokens), (N, L), dtype=torch.long, device=device)
+        print(f"Random sequences initialized: {chains.shape}")
+    
+    q = len(tokens)
     
     # Add sampling tensors to params for easy access
     params.update(sampling_data)
     print("Sampling tensors added to parameters")
     print()
     
-    # Convert sequences to tensors
-    print("Converting sequences to tensors...")
-    chains = sequences # Shape: (N, L) - amino acid indices
-    N, L = chains.shape
-    q = len(tokens)
-    
-    # If num_chains is provided, select only that many chains
-    if args.num_chains is not None:
+    # If num_chains is provided and sequences were loaded from file, select subset
+    if args.num_chains is not None and args.path_chains is not None:
         if args.num_chains <= 0:
             print(f"Error: num_chains must be positive, got {args.num_chains}", file=sys.stderr)
             sys.exit(1)
@@ -161,25 +194,31 @@ def main():
             print(f"Warning: num_chains {args.num_chains} is larger than available sequences {N}. Using all {N} sequences.")
         else:
             print(f"Selecting first {args.num_chains} sequences out of {N}...")
-            chains = chains[:args.num_chains]
+            # extract randomly num_chains sequences
+            indices = torch.randperm(N)[:args.num_chains]
+            chains = chains[indices]
             N = args.num_chains
             print(f"Using {N} sequences for evolution")
             print()
     
     # If seq_index is provided, replicate that single sequence N times
     if args.seq_index is not None:
-        if args.seq_index < 0 or args.seq_index >= sequences.shape[0]:
-            print(f"Error: seq_index {args.seq_index} is out of range [0, {sequences.shape[0]-1}]", file=sys.stderr)
+        if args.path_chains is None:
+            print(f"Error: --seq_index can only be used with --path_chains", file=sys.stderr)
+            sys.exit(1)
+        if args.seq_index < 0 or args.seq_index >= chains.shape[0]:
+            print(f"Error: seq_index {args.seq_index} is out of range [0, {chains.shape[0]-1}]", file=sys.stderr)
             sys.exit(1)
         
         print(f"Replicating sequence {args.seq_index} {N} times...")
-        selected_sequence = sequences[args.seq_index:args.seq_index+1]  # Shape: (1, L)
+        selected_sequence = chains[args.seq_index:args.seq_index+1]  # Shape: (1, L)
         chains = selected_sequence.repeat(N, 1)  # Shape: (N, L)
         print(f"All {N} sequences are now identical to sequence {args.seq_index}")
         print()
     
     # Train PCA on CM_130530_MC.fasta data
     print("Training PCA on reference dataset (CM_130530_MC.fasta)...")
+    t0 = time.time()
     pca_data_path = "example_data/CM_130530_MC.fasta"
     if os.path.isfile(pca_data_path):
         _, pca_sequences = import_from_fasta(pca_data_path, tokens, filter_sequences=True)
@@ -198,6 +237,7 @@ def main():
         # Compute target statistics for correlation tracking
         print("Computing target statistics...")
         pi_target, pij_target = compute_target_statistics(pca_sequences_onehot)
+        print(f"PCA and statistics computed (took {time.time()-t0:.2f}s)")
         print()
     else:
         print(f"Warning: PCA training data not found at {pca_data_path}. Skipping PCA analysis.")
@@ -208,19 +248,20 @@ def main():
     
     # Translate amino acid sequences to DNA codons uniformly
     print("Translating amino acid sequences to DNA codons...")
+    t0 = time.time()
     dna_chains = translate_to_dna_uniform(chains, amino_to_codons, sampling_data["codon_to_idx"], device)
-    print(f"DNA sequences: {dna_chains.shape}")
+    print(f"DNA sequences: {dna_chains.shape} (took {time.time()-t0:.2f}s)")
     
     # Convert amino acid chains to one-hot encoding
     chains_onehot = torch.nn.functional.one_hot(chains.long(), num_classes=q).to(dtype).to(device)
     print(f"One-hot sequences: {chains_onehot.shape}")
     print()
     
-    # Run evolution for 1000 iterations
-    print("Running evolution for 1000 iterations...")
+    # Run evolution
+    num_iterations = args.num_iterations
+    print(f"Running evolution for {num_iterations} iterations...")
     print("-" * 60)
-    
-    num_iterations = 50_000
+    t_evolution_start = time.time()
     current_chains = chains_onehot.clone()
     current_dna_chains = dna_chains.clone()
     
@@ -243,16 +284,20 @@ def main():
     # Run evolution
     for iteration in range(num_iterations):
         if (iteration + 1) % 1000 == 0:
-            print(f"  Iteration {iteration + 1}/{num_iterations}...")
+            elapsed = time.time() - t_evolution_start
+            iter_per_sec = (iteration + 1) / elapsed
+            print(f"  Iteration {iteration + 1}/{num_iterations}... ({iter_per_sec:.1f} iter/s)")
         
         current_chains, current_dna_chains = evolve_sequences(
             chains=current_chains,
             dna_chains=current_dna_chains,
             params=params,
             codon_neighbor_tensor=sampling_data["codon_neighbor_tensor"],
+            codon_neighbor_codon_tensor=sampling_data["codon_neighbor_codon_tensor"],
             mutation_lookup=sampling_data["mutation_lookup"],
             num_options=sampling_data["num_options"],
-            p=0.5,
+            codon_usage=sampling_data["codon_usage"],
+            p=args.p_metropolis,
             device=device,
             dtype=dtype,
             beta=1.0
@@ -271,6 +316,7 @@ def main():
     
     # Compute energies before and after evolution
     print("\nComputing energies...")
+    t0 = time.time()
     initial_chains_onehot = torch.nn.functional.one_hot(initial_chains_aa.long(), num_classes=q).to(dtype).to(device)
     params_e = { # only biases and couplings needed for energy computation 
         "bias": params["bias"],
@@ -286,10 +332,13 @@ def main():
     print(f"  Mean energy (initial): {mean_energy_initial:.4f}")
     print(f"  Mean energy (final):   {mean_energy_final:.4f}")
     print(f"  Energy change:         {energy_change:.4f}")
+    print(f"  (took {time.time()-t0:.2f}s)")
 
     print("-" * 60)
+    evolution_time = time.time() - t_evolution_start
     print(f"\nEvolution completed!")
     print(f"  Total iterations: {num_iterations}")
+    print(f"  Evolution time: {evolution_time:.2f}s ({num_iterations/evolution_time:.1f} iter/s)")
     print(f"  Final chains: {current_chains.shape}")
     print(f"  Final DNA chains: {current_dna_chains.shape}")
     print()
@@ -450,6 +499,7 @@ def main():
     # PCA projection and visualization
     if pca is not None:
         print("Performing PCA analysis...")
+        t0 = time.time()
         
         # Project natural sequences (from CM_130530_MC.fasta)
         natural_projection = project_sequences(pca_sequences_onehot, pca)
@@ -480,10 +530,14 @@ def main():
             title=f"PCA: Sequence Evolution ({num_iterations} iterations)",
             natural_proj=natural_projection
         )
-        
+        print(f"PCA analysis completed (took {time.time()-t0:.2f}s)")
         print()
     
-    print("Genie 2.0 completed successfully")
+    total_time = time.time() - start_time_total
+    print("="*60)
+    print(f"Genie 2.0 completed successfully")
+    print(f"Total execution time: {total_time:.2f}s ({total_time/60:.2f} min)")
+    print("="*60)
     
 
 if __name__ == "__main__":

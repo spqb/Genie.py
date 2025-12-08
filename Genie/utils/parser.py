@@ -18,17 +18,18 @@ def parse_arguments():
     
     # Required arguments
     parser.add_argument(
-        '-s', '--path_sequences',
-        type=str,
-        required=True,
-        help='Path to the initial sequences file'
-    )
-    
-    parser.add_argument(
         '-p', '--path_params',
         type=str,
         required=True,
         help='Path to the parameters file'
+    )
+    
+    # Optional arguments
+    parser.add_argument(
+        '-c', '--path_chains',
+        type=str,
+        default=None,
+        help='Path to the initial sequences file (optional, if not provided chains are initialized randomly)'
     )
     
     # Optional arguments
@@ -50,8 +51,40 @@ def parse_arguments():
         '-n', '--num_chains',
         type=int,
         default=None,
-        help='Number of chains to use during evolution (optional, uses all sequences if not specified)'
+        help='Number of chains to use during evolution (required if path_chains is not provided, otherwise optional)'
+    )
+    
+    parser.add_argument(
+        '--p_metropolis',
+        type=float,
+        default=0.5,
+        help='Probability threshold for Metropolis vs Gibbs sampling (0.0 = only Metropolis, 1.0 = only Gibbs, default: 0.5)'
+    )
+    
+    parser.add_argument(
+        '--num_iterations',
+        type=int,
+        default=50000,
+        help='Number of evolution iterations (default: 50000)'
+    )
+    
+    parser.add_argument(
+        '--no-correlation-tracking',
+        action='store_true',
+        help='Disable correlation tracking during evolution (faster, less GPU-CPU transfers)'
+    )
+    
+    parser.add_argument(
+        '--no-pca',
+        action='store_true',
+        help='Disable PCA analysis (faster for large runs)'
     )
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.path_chains is None:
+        if args.num_chains is None:
+            parser.error("--num_chains is required when --path_chains is not provided")
+    
     return args

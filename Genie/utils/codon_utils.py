@@ -133,6 +133,8 @@ def build_codon_neighbor_tensor(
     
     Creates a 4D tensor where neighbor_tensor[codon_idx, position, aa_idx] indicates
     whether amino acid aa_idx is accessible from codon_idx by mutating nucleotide at position.
+    Also creates a codon_neighbor_codon_tensor[codon_idx, position, neighbor_codon_idx] indicating
+    whether neighbor_codon_idx is accessible from codon_idx by mutating nucleotide at position.
     
     Args:
         codon_neighbors: Dictionary mapping codons to their neighbors by position
@@ -141,8 +143,13 @@ def build_codon_neighbor_tensor(
         device: Torch device for tensor allocation
     
     Returns:
-        torch.Tensor: Boolean tensor of shape (num_codons, 3, num_amino_acids)
-                     where [i, pos, aa] = True if aa is accessible from codon i at position pos
+        tuple: (neighbor_tensor, codon_neighbor_codon_tensor, codon_to_idx, all_codons) where:
+            - neighbor_tensor: Boolean tensor of shape (num_codons, 3, num_amino_acids)
+                             where [i, pos, aa] = True if aa is accessible from codon i at position pos
+            - codon_neighbor_codon_tensor: Boolean tensor of shape (num_codons, 3, num_codons)
+                             where [i, pos, j] = True if codon j is accessible from codon i at position pos
+            - codon_to_idx: Dictionary mapping codon strings to indices
+            - all_codons: List of all codon strings
     """
     # Create codon to index mapping - include gap '---' even though it has no neighbors
     all_codons = sorted(codon_neighbors.keys())
@@ -157,8 +164,9 @@ def build_codon_neighbor_tensor(
         device = torch.device('cpu')
     
     neighbor_tensor = torch.zeros(num_codons, 3, num_amino_acids, dtype=torch.bool, device=device)
+    codon_neighbor_codon_tensor = torch.zeros(num_codons, 3, num_codons, dtype=torch.bool, device=device)
     
-    # Fill tensor
+    # Fill tensors
     for codon, codon_idx in codon_to_idx.items():
         # Special handling for gap codon - it can only stay as gap (no mutation)
         if codon not in codon_neighbors:
@@ -167,24 +175,29 @@ def build_codon_neighbor_tensor(
                 # For all positions, gap can only stay as gap
                 for pos in range(3):
                     neighbor_tensor[codon_idx, pos, gap_aa] = True
+                    codon_neighbor_codon_tensor[codon_idx, pos, codon_idx] = True
             continue
         
         for pos in range(3):
             # Get neighbor codons at this position
             neighbor_codons = codon_neighbors[codon].get(pos, [])
             
-            # Mark accessible amino acids
+            # Mark accessible amino acids and codons
             for neighbor_codon in neighbor_codons:
                 if neighbor_codon in codon_to_amino:
                     aa_idx = codon_to_amino[neighbor_codon]
                     neighbor_tensor[codon_idx, pos, aa_idx] = True
+                    # Mark accessible codon
+                    neighbor_codon_idx = codon_to_idx[neighbor_codon]
+                    codon_neighbor_codon_tensor[codon_idx, pos, neighbor_codon_idx] = True
             
-            # Include current amino acid (no mutation)
+            # Include current amino acid and codon (no mutation)
             if codon in codon_to_amino:
                 current_aa = codon_to_amino[codon]
                 neighbor_tensor[codon_idx, pos, current_aa] = True
+                codon_neighbor_codon_tensor[codon_idx, pos, codon_idx] = True
     
-    return neighbor_tensor, codon_to_idx, all_codons
+    return neighbor_tensor, codon_neighbor_codon_tensor, codon_to_idx, all_codons
 
 
 def build_codon_mutation_lookup(
@@ -295,9 +308,123 @@ def build_codon_mutation_lookup(
     return mutation_lookup, num_options, codon_to_idx, all_codons
 
 
+# E. coli codon usage frequencies
+ECOLI_CODON_USAGE = {
+    "TTT": 0.58, "TTC": 0.42,
+    "TTA": 0.14, "TTG": 0.13,
+    "TCT": 0.17, "TCC": 0.15, "TCA": 0.14, "TCG": 0.14,
+    "TAT": 0.59, "TAC": 0.41,
+    "TGT": 0.46, "TGC": 0.54, "TGG": 1.00,
+    "CTT": 0.12, "CTC": 0.10, "CTA": 0.04, "CTG": 0.47,
+    "CCT": 0.18, "CCC": 0.13, "CCA": 0.20, "CCG": 0.49,
+    "CAT": 0.57, "CAC": 0.43,
+    "CAA": 0.34, "CAG": 0.66,
+    "CGT": 0.36, "CGC": 0.36, "CGA": 0.07, "CGG": 0.10,
+    "ATT": 0.50, "ATC": 0.39, "ATA": 0.11,
+    "ACT": 0.19, "ACC": 0.40, "ACA": 0.16, "ACG": 0.25,
+    "AAT": 0.49, "AAC": 0.51,
+    "AAA": 0.74, "AAG": 0.26,
+    "AGT": 0.16, "AGC": 0.24, "AGA": 0.07, "AGG": 0.04,
+    "GTT": 0.28, "GTC": 0.20, "GTA": 0.17, "GTG": 0.35,
+    "GCT": 0.18, "GCC": 0.26, "GCA": 0.23, "GCG": 0.33,
+    "GAT": 0.63, "GAC": 0.37,
+    "GAA": 0.68, "GAG": 0.32, "ATG": 1.00,
+    "GGT": 0.35, "GGC": 0.37, "GGA": 0.13, "GGG": 0.15,
+    "---": 1.0
+}
+
+# Standard uniform codon usage based on degeneracy (1/number_of_codons_for_same_amino_acid)
+STANDARD_CODON_USAGE = {
+    # Phenylalanine (F) - 2 codons
+    "TTT": 1.0/2, "TTC": 1.0/2,
+    # Leucine (L) - 6 codons
+    "TTA": 1.0/6, "TTG": 1.0/6, "CTT": 1.0/6, "CTC": 1.0/6, "CTA": 1.0/6, "CTG": 1.0/6,
+    # Serine (S) - 6 codons
+    "TCT": 1.0/6, "TCC": 1.0/6, "TCA": 1.0/6, "TCG": 1.0/6, "AGT": 1.0/6, "AGC": 1.0/6,
+    # Tyrosine (Y) - 2 codons
+    "TAT": 1.0/2, "TAC": 1.0/2,
+    # Cysteine (C) - 2 codons
+    "TGT": 1.0/2, "TGC": 1.0/2,
+    # Tryptophan (W) - 1 codon
+    "TGG": 1.0,
+    # Proline (P) - 4 codons
+    "CCT": 1.0/4, "CCC": 1.0/4, "CCA": 1.0/4, "CCG": 1.0/4,
+    # Histidine (H) - 2 codons
+    "CAT": 1.0/2, "CAC": 1.0/2,
+    # Glutamine (Q) - 2 codons
+    "CAA": 1.0/2, "CAG": 1.0/2,
+    # Arginine (R) - 6 codons
+    "CGT": 1.0/6, "CGC": 1.0/6, "CGA": 1.0/6, "CGG": 1.0/6, "AGA": 1.0/6, "AGG": 1.0/6,
+    # Isoleucine (I) - 3 codons
+    "ATT": 1.0/3, "ATC": 1.0/3, "ATA": 1.0/3,
+    # Methionine (M) - 1 codon
+    "ATG": 1.0,
+    # Threonine (T) - 4 codons
+    "ACT": 1.0/4, "ACC": 1.0/4, "ACA": 1.0/4, "ACG": 1.0/4,
+    # Asparagine (N) - 2 codons
+    "AAT": 1.0/2, "AAC": 1.0/2,
+    # Lysine (K) - 2 codons
+    "AAA": 1.0/2, "AAG": 1.0/2,
+    # Valine (V) - 4 codons
+    "GTT": 1.0/4, "GTC": 1.0/4, "GTA": 1.0/4, "GTG": 1.0/4,
+    # Alanine (A) - 4 codons
+    "GCT": 1.0/4, "GCC": 1.0/4, "GCA": 1.0/4, "GCG": 1.0/4,
+    # Aspartic acid (D) - 2 codons
+    "GAT": 1.0/2, "GAC": 1.0/2,
+    # Glutamic acid (E) - 2 codons
+    "GAA": 1.0/2, "GAG": 1.0/2,
+    # Glycine (G) - 4 codons
+    "GGT": 1.0/4, "GGC": 1.0/4, "GGA": 1.0/4, "GGG": 1.0/4,
+    # Gap - 1 codon
+    "---": 1.0
+}
+
+
+def build_codon_usage_tensor(
+    codon_usage_dict: Dict[str, float],
+    codon_to_idx: Dict[str, int],
+    all_codons: List[str],
+    device: torch.device = None
+) -> torch.Tensor:
+    """
+    Build a 1D tensor of codon usage frequencies from a dictionary.
+    
+    Creates a tensor where codon_usage[codon_idx] contains the usage frequency
+    for that codon according to the provided dictionary.
+    
+    Args:
+        codon_usage_dict: Dictionary mapping codon strings to usage frequencies (e.g., ECOLI_CODON_USAGE)
+        codon_to_idx: Dictionary mapping codon strings to indices
+        all_codons: List of all codon strings
+        device: Torch device for tensor allocation
+    
+    Returns:
+        torch.Tensor: 1D tensor of shape (num_codons,) with usage frequencies
+    
+    Example:
+        >>> ecoli_usage = build_codon_usage_tensor(ECOLI_CODON_USAGE, codon_to_idx, all_codons)
+        >>> custom_usage = build_codon_usage_tensor({"ATG": 1.0, "TTT": 0.5, ...}, codon_to_idx, all_codons)
+    """
+    if device is None:
+        device = torch.device('cpu')
+    
+    num_codons = len(all_codons)
+    codon_usage_tensor = torch.zeros(num_codons, dtype=torch.float32, device=device)
+    
+    # Fill tensor with usage frequencies
+    for codon, idx in codon_to_idx.items():
+        if codon in codon_usage_dict:
+            codon_usage_tensor[idx] = codon_usage_dict[codon]
+        else:
+            raise ValueError(f"Codon '{codon}' not found in codon_usage_dict. All codons must have usage frequencies defined.")
+    
+    return codon_usage_tensor
+
+
 def precompute_sampling_tensors(
     tokens: str,
-    device: torch.device
+    device: torch.device,
+    codon_usage_dict: Dict[str, float] = None
 ) -> Dict:
     """
     Pre-compute all necessary tensors for GPU-optimized Gibbs sampling.
@@ -308,6 +435,9 @@ def precompute_sampling_tensors(
     Args:
         tokens: Amino acid alphabet string (e.g., from get_tokens("protein"))
         device: Torch device for tensor allocation (CPU/GPU)
+        codon_usage_dict: Optional dictionary of codon usage frequencies. 
+                         If None, uses STANDARD_CODON_USAGE (uniform based on degeneracy).
+                         Can also use ECOLI_CODON_USAGE or any custom dictionary.
     
     Returns:
         Dict containing:
@@ -315,11 +445,13 @@ def precompute_sampling_tensors(
             - "amino_to_codons": Dict mapping amino acid indices to codon lists
             - "codon_neighbors": Dict of codon nearest neighbors by position
             - "neighbor_counts": Dict of neighbor counts
-            - "codon_neighbor_tensor": Tensor (num_codons, 3, q) for accessibility
+            - "codon_neighbor_tensor": Tensor (num_codons, 3, q) for amino acid accessibility
+            - "codon_neighbor_codon_tensor": Tensor (num_codons, 3, num_codons) for codon accessibility
             - "mutation_lookup": Tensor (num_codons, 3, q, max_neighbors) for mutations
             - "num_options": Tensor (num_codons, 3, q) for option counts
             - "codon_to_idx": Dict mapping codon strings to indices
             - "all_codons": List of all codons
+            - "codon_usage": Tensor (num_codons,) with codon usage frequencies
     """
     num_amino_acids = len(tokens)
     
@@ -333,7 +465,7 @@ def precompute_sampling_tensors(
     codon_neighbors, neighbor_counts = build_codon_neighbors()
 
     # Build GPU tensors for fast sampling
-    codon_neighbor_tensor, codon_to_idx, all_codons = build_codon_neighbor_tensor(
+    codon_neighbor_tensor, codon_neighbor_codon_tensor, codon_to_idx, all_codons = build_codon_neighbor_tensor(
         codon_neighbors, 
         codon_to_amino, 
         num_amino_acids, 
@@ -346,6 +478,23 @@ def precompute_sampling_tensors(
         device
     )
     
+    # Build codon usage tensor (default to standard uniform if not provided)
+    if codon_usage_dict is None:
+        codon_usage_dict = STANDARD_CODON_USAGE
+    
+    codon_usage = build_codon_usage_tensor(
+        codon_usage_dict,
+        codon_to_idx,
+        all_codons,
+        device
+    )
+    
+    # Build codon_to_aa_idx tensor: maps each codon index to its amino acid index
+    # This eliminates the slow CPU loop in gibbs_step_batch
+    num_codons = len(all_codons)
+    codon_to_aa_idx = torch.zeros(num_codons, dtype=torch.long, device=device)
+    for codon_idx, codon_str in enumerate(all_codons):
+        codon_to_aa_idx[codon_idx] = codon_to_amino[codon_str]
     
     return {
         "codon_to_amino": codon_to_amino,
@@ -353,8 +502,11 @@ def precompute_sampling_tensors(
         "codon_neighbors": codon_neighbors,
         "neighbor_counts": neighbor_counts,
         "codon_neighbor_tensor": codon_neighbor_tensor,
+        "codon_neighbor_codon_tensor": codon_neighbor_codon_tensor,
         "mutation_lookup": mutation_lookup,
         "num_options": num_options,
         "codon_to_idx": codon_to_idx,
-        "all_codons": all_codons
+        "all_codons": all_codons,
+        "codon_usage": codon_usage,
+        "codon_to_aa_idx": codon_to_aa_idx
     }

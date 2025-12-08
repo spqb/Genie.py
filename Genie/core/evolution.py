@@ -11,8 +11,10 @@ def evolve_sequences(
     dna_chains: torch.Tensor,
     params: Dict[str, torch.Tensor],
     codon_neighbor_tensor: torch.Tensor,
+    codon_neighbor_codon_tensor: torch.Tensor,
     mutation_lookup: torch.Tensor,
     num_options: torch.Tensor,
+    codon_usage: torch.Tensor,
     p: float = 0.5,
     device: torch.device = None,
     dtype: torch.dtype = torch.float32,
@@ -28,8 +30,10 @@ def evolve_sequences(
         dna_chains: DNA sequences as codon indices (n_chains, seq_length)
         params: DCA model parameters with bias and coupling_matrix
         codon_neighbor_tensor: Pre-computed neighbor accessibility (num_codons, 3, q)
+        codon_neighbor_codon_tensor: Pre-computed codon neighbor accessibility (num_codons, 3, num_codons)
         mutation_lookup: Pre-computed codon mutations (num_codons, 3, q, max_neighbors)
         num_options: Count of valid options (num_codons, 3, q)
+        codon_usage: Tensor (num_codons,) with codon usage frequencies
         p: Float probability threshold for Metropolis vs Gibbs selection
         device: Torch device (CPU/GPU)
         dtype: Torch data type
@@ -83,8 +87,11 @@ def evolve_sequences(
             dna_chains=gibbs_dna_chains,
             params=params,
             codon_neighbor_tensor=codon_neighbor_tensor,
+            codon_neighbor_codon_tensor=codon_neighbor_codon_tensor,
             mutation_lookup=mutation_lookup,
             num_options=num_options,
+            codon_usage=codon_usage,
+            codon_to_aa_idx=params["codon_to_aa_idx"],
             device=device,
             dtype=dtype,
             beta=beta
