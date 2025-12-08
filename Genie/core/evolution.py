@@ -81,25 +81,28 @@ def evolve_sequences(
     
     is_gap = (current_codon_indices == gap_idx)  # (N,)
     
-    # NEW PROPOSAL RULES:
-    # - From gap: propose any codon (0-63) with prob 1/64 each
-    # - From non-gap: propose gap with prob 1/64, or stay with prob 63/64
+    # CORRECTED PROPOSAL RULES:
+    # - From gap: cannot propose gap itself (p=0), any of the 63 non-gap codons with p=1/63 each
+    # - From non-gap: propose same codon with p=63/64, or gap with p=1/64
     
-    # For gap positions: propose random codon from 0-63 (including stop codons)
-    random_codon_all = torch.randint(0, 64, (N,), device=device)
+    # For gap positions: propose random NON-GAP codon from the 63 non-gap codons
+    # non_gap_codon_tensor contains indices of all 63 non-gap codons
+    num_non_gap = non_gap_codon_tensor.shape[0]  # Should be 63
+    random_non_gap_idx = torch.randint(0, num_non_gap, (N,), device=device)
+    random_non_gap_codon = non_gap_codon_tensor[random_non_gap_idx]
     
     # For non-gap positions: 1/64 chance gap, 63/64 chance stay
     rand_vals = torch.rand(N, device=device, dtype=dtype)
     propose_gap_from_nongap = rand_vals < (1.0 / 64.0)
     
-    # Combine: if gap → random_codon_all, if non-gap → gap (1/64) or stay (63/64)
+    # Combine: if gap → random non-gap codon, if non-gap → gap (1/64) or stay (63/64)
     metro_proposed_codon = torch.where(
         is_gap,
-        random_codon_all,  # gap → any codon uniformly
+        random_non_gap_codon,  # gap → any non-gap codon uniformly (p=1/63 each)
         torch.where(
             propose_gap_from_nongap,
-            torch.full((N,), gap_idx, device=device, dtype=torch.long),  # non-gap → gap
-            current_codon_indices  # non-gap → stay
+            torch.full((N,), gap_idx, device=device, dtype=torch.long),  # non-gap → gap (p=1/64)
+            current_codon_indices  # non-gap → stay (p=63/64)
         )
     )
     
@@ -115,14 +118,41 @@ def evolve_sequences(
     metro_proposed_aa_idx = codon_to_aa_idx[metro_proposed_codon]
     metro_proposed_aa_onehot = torch.nn.functional.one_hot(metro_proposed_aa_idx, num_classes=q).to(dtype)
     
-    # Metropolis acceptance
+    # Metropolis acceptance with proposal probability ratio
+    # Since proposals are now ASYMMETRIC, we need to include q(reverse)/q(forward)
+    # - gap → non-gap: q(forward) = 1/63, q(reverse) = 1/64 → ratio = (1/64)/(1/63) = 63/64
+    # - non-gap → gap: q(forward) = 1/64, q(reverse) = 1/63 → ratio = (1/63)/(1/64) = 64/63
+    # - non-gap → same: q(forward) = 63/64, q(reverse) = 63/64 → ratio = 1
+    
     delta_E = torch.sum((current_aa_onehot - metro_proposed_aa_onehot) * local_field, dim=-1)
-    metro_acceptance_prob = torch.exp(-beta * delta_E)
+    
+    # Calculate proposal probability ratio q(x'->x) / q(x->x')
+    proposed_is_gap = (metro_proposed_codon == gap_idx)
+    
+    # Initialize ratio to 1 (for non-gap → same transitions)
+    proposal_ratio = torch.ones(N, device=device, dtype=dtype)
+    
+    # gap → non-gap: multiply by 63/64
+    proposal_ratio = torch.where(
+        is_gap & ~proposed_is_gap,
+        torch.full((N,), 63.0/64.0, device=device, dtype=dtype),
+        proposal_ratio
+    )
+    
+    # non-gap → gap: multiply by 64/63
+    proposal_ratio = torch.where(
+        ~is_gap & proposed_is_gap,
+        torch.full((N,), 64.0/63.0, device=device, dtype=dtype),
+        proposal_ratio
+    )
+    
+    # Metropolis acceptance: min(1, exp(-beta * delta_E) * proposal_ratio)
+    metro_acceptance_prob = torch.exp(-beta * delta_E) * proposal_ratio
     
     # Reject stop codons (>= 62)
     metro_acceptance_prob = torch.where(is_stop_codon, torch.zeros_like(metro_acceptance_prob), metro_acceptance_prob)
     
-    # NO division by 64 - proposal probabilities are now symmetric
+    # Clamp to [0, 1]
     metro_acceptance_prob = torch.clamp(metro_acceptance_prob, 0.0, 1.0)
     metro_accept = torch.rand(N, device=device, dtype=dtype) < metro_acceptance_prob
     
