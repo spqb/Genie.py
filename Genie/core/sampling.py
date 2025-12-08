@@ -11,6 +11,9 @@ def metropolis_step_batch(
     params: Dict[str, torch.Tensor],
     codon_to_amino: Dict[str, int],
     all_codons: List[str],
+    gap_codon_idx: int,
+    non_gap_codon_tensor: torch.Tensor,
+    codon_to_aa_idx: torch.Tensor,
     device: torch.device,
     dtype: torch.dtype,
     beta: float = 1.0
@@ -30,6 +33,9 @@ def metropolis_step_batch(
         params: DCA model parameters with "bias" (L, q) and "coupling_matrix" (L, q, L, q)
         codon_to_amino: Mapping from codon string to amino acid index
         all_codons: List of all codons (length 62: 61 standard + 1 gap)
+        gap_codon_idx: Index of gap codon '---' in all_codons list (pre-computed)
+        non_gap_codon_tensor: Tensor of non-gap codon indices (pre-computed)
+        codon_to_aa_idx: Tensor mapping codon index to amino acid index (pre-computed)
         device: Torch device (CPU/GPU)
         dtype: Torch data type
         beta: Inverse temperature (default: 1.0)
@@ -39,22 +45,11 @@ def metropolis_step_batch(
     """
     N, L, q = chains.shape
     
-    # Gap codon is '---' at index 0 in amino acids
-    gap_codon_str = '---'
-    gap_aa_idx = 0  # Gap amino acid is always at index 0
+    # Gap amino acid is always at index 0
+    gap_aa_idx = 0
     
-    # Find gap codon index in all_codons list
-    gap_codon_idx = all_codons.index(gap_codon_str)
-    
-    # Build tensor mapping codon index -> amino acid index
-    codon_to_aa_tensor = torch.zeros(len(all_codons), dtype=torch.long, device=device)
-    for codon_idx, codon_str in enumerate(all_codons):
-        codon_to_aa_tensor[codon_idx] = codon_to_amino[codon_str]
-    
-    # Non-gap codons: all except gap
-    non_gap_codon_indices = [i for i, codon in enumerate(all_codons) if codon != gap_codon_str]
-    num_non_gap_codons = len(non_gap_codon_indices)  # Should be 61
-    non_gap_codon_tensor = torch.tensor(non_gap_codon_indices, dtype=torch.long, device=device)
+    # Use pre-computed tensors (no more reconstruction overhead!)
+    num_non_gap_codons = non_gap_codon_tensor.shape[0]  # Should be 61
     
     # Randomly select one position for each chain
     batch_arange = torch.arange(N, device=device)
@@ -68,22 +63,48 @@ def metropolis_step_batch(
     # Determine which chains have gap at selected position
     is_gap_mask = (current_codon_indices == gap_codon_idx)  # Shape: (N,)
     
+    # NEW PROPOSAL RULES:
+    # - From gap: propose any codon (0-63, including gap and stop) with prob 1/64 each
+    # - From non-gap: propose gap with prob 1/64, or stay with prob 63/64
+    
     # Propose new codons
     proposed_codon_indices = torch.zeros(N, dtype=torch.long, device=device)
+    proposal_probs = torch.ones(N, dtype=dtype, device=device)  # Track proposal probabilities
     
-    # For gap positions: propose random non-gap codon uniformly
+    # For gap positions: propose random codon uniformly from ALL 64 codons (including 3 stop codons)
+    # Total codons: 61 standard + 1 gap + 3 stop = 65, but we use 64-codon model (gap=61, stops=61,62,63)
+    # Actually: 61 non-gap + 1 gap = 62 total in our model, we extend to 64 for stop codons
     num_gaps = is_gap_mask.sum().item()
     if num_gaps > 0:
-        random_non_gap_idx = torch.randint(0, num_non_gap_codons, (num_gaps,), device=device)
-        proposed_codon_indices[is_gap_mask] = non_gap_codon_tensor[random_non_gap_idx]
+        # Propose uniformly from 0-63 (64 codons: 61 standard + gap + 2 implicit stops)
+        random_codon_idx = torch.randint(0, 64, (num_gaps,), device=device)
+        proposed_codon_indices[is_gap_mask] = random_codon_idx
+        proposal_probs[is_gap_mask] = 1.0 / 64.0  # P(propose any codon | current=gap) = 1/64
     
-    # For non-gap positions: propose gap
+    # For non-gap positions: propose gap with prob 1/64, or stay with prob 63/64
     num_non_gaps = (~is_gap_mask).sum().item()
     if num_non_gaps > 0:
-        proposed_codon_indices[~is_gap_mask] = gap_codon_idx
+        # Randomly decide: 1/64 chance of proposing gap, 63/64 chance of staying
+        rand_vals = torch.rand(num_non_gaps, device=device, dtype=dtype)
+        propose_gap_mask = rand_vals < (1.0 / 64.0)
+        
+        # Initialize with current codon (stay)
+        proposed_codon_indices[~is_gap_mask] = current_codon_indices[~is_gap_mask]
+        
+        # For those proposing gap, set to gap_codon_idx
+        non_gap_indices = torch.where(~is_gap_mask)[0]
+        gap_proposal_indices = non_gap_indices[propose_gap_mask]
+        proposed_codon_indices[gap_proposal_indices] = gap_codon_idx
+        
+        # Proposal probabilities
+        proposal_probs[~is_gap_mask] = torch.where(
+            propose_gap_mask,
+            torch.tensor(1.0 / 64.0, dtype=dtype, device=device),  # P(gap | non-gap)
+            torch.tensor(63.0 / 64.0, dtype=dtype, device=device)  # P(stay | non-gap)
+        )
     
-    # Convert proposed codons to amino acid indices using pre-built tensor
-    proposed_aa_indices = codon_to_aa_tensor[proposed_codon_indices]  # Shape: (N,)
+    # Convert proposed codons to amino acid indices using pre-computed tensor
+    proposed_aa_indices = codon_to_aa_idx[proposed_codon_indices]  # Shape: (N,)
     
     # Create proposed amino acid one-hot
     proposed_aa_onehot = torch.nn.functional.one_hot(proposed_aa_indices, num_classes=q).to(dtype)
@@ -93,10 +114,9 @@ def metropolis_step_batch(
     biases = params["bias"][selected_sites]  # Shape: (N, q)
     couplings_batch = params["coupling_matrix"][selected_sites]  # Shape: (N, q, L, q)
     
-    # Compute coupling term
-    chains_flat = chains.reshape(N, L * q, 1)
-    couplings_flat = couplings_batch.reshape(N, q, L * q)
-    coupling_term = torch.bmm(couplings_flat, chains_flat).squeeze(-1)  # (N, q)
+    # Compute coupling term using einsum (more efficient than bmm)
+    # einsum 'nqLQ,nLQ->nq': for each n, sum over L,Q of couplings[n,q,L,Q] * chains[n,L,Q]
+    coupling_term = torch.einsum('nqLQ,nLQ->nq', couplings_batch, chains)  # (N, q)
     
     # Local field
     local_field = biases + coupling_term  # Shape: (N, q)
@@ -105,10 +125,14 @@ def metropolis_step_batch(
     delta_E = torch.sum((current_aa_onehot - proposed_aa_onehot) * local_field, dim=-1)  # Shape: (N,)
     
     # Metropolis acceptance: P_accept = exp(-beta * ΔE)
+    # NO division by 64 - proposal probabilities are already symmetric (both 1/64)
     acceptance_prob = torch.exp(-beta * delta_E)
     
-    # For non-gap -> gap transitions, multiply by proposal probability 1/64
-    acceptance_prob[~is_gap_mask] = acceptance_prob[~is_gap_mask] / 64.0
+    # Reject stop codons (indices 61, 62, 63 in 64-codon model)
+    # In our current model: codons 0-60 are standard, 61 is gap
+    # If proposed_codon >= 62, it's a stop codon → reject
+    is_stop_codon = proposed_codon_indices >= 62
+    acceptance_prob[is_stop_codon] = 0.0  # Always reject stop codons
     
     # Clip acceptance probability to [0, 1]
     acceptance_prob = torch.clamp(acceptance_prob, 0.0, 1.0)
@@ -117,17 +141,14 @@ def metropolis_step_batch(
     random_uniform = torch.rand(N, device=device, dtype=dtype)
     accept_mask = (random_uniform < acceptance_prob)  # Shape: (N,)
     
-    # Update chains
+    # Update chains in-place (no clone needed!)
     final_aa_onehot = torch.where(accept_mask.unsqueeze(-1), proposed_aa_onehot, current_aa_onehot)
     final_codon_indices = torch.where(accept_mask, proposed_codon_indices, current_codon_indices)
     
-    updated_chains = chains.clone()
-    updated_chains[batch_arange, selected_sites] = final_aa_onehot
+    chains[batch_arange, selected_sites] = final_aa_onehot
+    dna_chains[batch_arange, selected_sites] = final_codon_indices
     
-    updated_dna_chains = dna_chains.clone()
-    updated_dna_chains[batch_arange, selected_sites] = final_codon_indices
-    
-    return updated_chains, updated_dna_chains
+    return chains, dna_chains
 
 
 def gibbs_step_batch(
@@ -194,10 +215,8 @@ def gibbs_step_batch(
     biases = params["bias"][selected_sites]  # Shape: (N, q)
     couplings_batch = params["coupling_matrix"][selected_sites]  # Shape: (N, q, L, q)
     
-    # Compute coupling term
-    chains_flat = chains.reshape(N, L * q, 1)
-    couplings_flat = couplings_batch.reshape(N, q, L * q)
-    coupling_term = torch.bmm(couplings_flat, chains_flat).squeeze(-1)  # (N, q)
+    # Compute coupling term using einsum (more efficient than bmm)
+    coupling_term = torch.einsum('nqLQ,nLQ->nq', couplings_batch, chains)  # (N, q)
     
     # Compute logits for all amino acids
     logits_aa = beta * (biases + coupling_term)  # Shape: (N, q)
@@ -316,9 +335,10 @@ def gibbs_step_batch(
     # Compute codon logits: aa_logit + log(codon_usage)
     codon_logits[valid_mask] = gathered_aa_logits[valid_mask] + log_codon_usage[None, :].expand(N, -1)[valid_mask]
     
-    # Sample new codon from softmax distribution
-    probs_codon = torch.softmax(codon_logits, dim=-1)  # (N, num_codons)
-    new_codon_indices = torch.multinomial(probs_codon, num_samples=1).squeeze(-1)  # Shape: (N,)
+    # Sample new codon using Gumbel-Max trick (faster than multinomial on GPU)
+    # Gumbel-Max: sample ~ Categorical(softmax(logits)) is equivalent to argmax(logits + Gumbel noise)
+    gumbel_noise = -torch.log(-torch.log(torch.rand(N, num_codons, device=device, dtype=dtype) + 1e-10) + 1e-10)
+    new_codon_indices = (codon_logits + gumbel_noise).argmax(dim=-1)  # Shape: (N,)
     
     # Get corresponding amino acid indices
     new_aa_indices = codon_aa_indices[batch_arange, new_codon_indices]  # Shape: (N,)
@@ -326,12 +346,8 @@ def gibbs_step_batch(
     # Create new one-hot residues
     new_residues = torch.nn.functional.one_hot(new_aa_indices, num_classes=q).to(dtype)
     
-    # Update chains
-    updated_chains = chains.clone()
-    updated_chains[batch_arange, selected_sites] = new_residues
+    # Update chains in-place (no clone needed!)
+    chains[batch_arange, selected_sites] = new_residues
+    dna_chains[batch_arange, selected_sites] = new_codon_indices
     
-    # Update DNA chains
-    updated_dna_chains = dna_chains.clone()
-    updated_dna_chains[batch_arange, selected_sites] = new_codon_indices
-    
-    return updated_chains, updated_dna_chains
+    return chains, dna_chains

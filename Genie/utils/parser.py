@@ -80,6 +80,13 @@ def parse_arguments():
         help='Disable PCA analysis (faster for large runs)'
     )
     
+    parser.add_argument(
+        '--pca_data',
+        type=str,
+        required=True,
+        help='Path to the reference dataset for PCA training (required)'
+    )
+    
     args = parser.parse_args()
     
     # Validate arguments

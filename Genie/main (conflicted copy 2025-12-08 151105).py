@@ -18,40 +18,22 @@ from .core.evolution import evolve_sequences
 from .utils.pca_utils import train_pca, project_sequences, plot_pca_evolution, plot_pca_with_density
 from .utils.stats import compute_target_statistics, compute_correlations
 
-# Compile evolve_sequences for maximum performance
-# Mode options: 'default', 'reduce-overhead', 'max-autotune'
-# max-autotune: extensive autotuning, 2-3x faster (compiles once, 10-30s warmup)
-# fullgraph=False: allows graph breaks for Python scalar operations
-try:
-    evolve_sequences_compiled = torch.compile(
-        evolve_sequences,
-        mode='max-autotune',
-        fullgraph=False,  # Allow graph breaks for scalar operations
-        dynamic=False
-    )
-    COMPILE_AVAILABLE = True
-except Exception as e:
-    print(f"Warning: torch.compile() not available ({e}). Using uncompiled version.")
-    evolve_sequences_compiled = evolve_sequences
-    COMPILE_AVAILABLE = False
-
 
 def translate_to_dna_uniform(
     chains: torch.Tensor,
-    amino_to_codons_tensor: torch.Tensor,
-    amino_to_num_codons: torch.Tensor,
+    amino_to_codons: dict,
+    codon_to_idx: dict,
     device: torch.device
 ) -> torch.Tensor:
     """
-    Translate amino acid sequences to DNA codon sequences (GPU-optimized).
+    Translate amino acid sequences to DNA codon sequences.
     
     For each amino acid, randomly selects a codon uniformly from available options.
-    Fully vectorized on GPU - no CPU loops!
     
     Args:
         chains: Amino acid sequences as indices (N, L)
-        amino_to_codons_tensor: Tensor (num_aa, max_codons) mapping aa → codon indices
-        amino_to_num_codons: Tensor (num_aa,) with count of codons per amino acid
+        amino_to_codons: Mapping from amino acid indices to codon lists
+        codon_to_idx: Mapping from codon strings to codon indices
         device: Torch device
     
     Returns:
@@ -59,22 +41,27 @@ def translate_to_dna_uniform(
     """
     N, L = chains.shape
     
-    # Flatten chains for vectorized operations
-    chains_flat = chains.flatten()  # Shape: (N*L,) on GPU
+    # Vectorized translation with random codon selection
+    chains_cpu = chains.cpu().numpy().flatten()  # shape: (N*L,)
+    dna_flat = np.zeros(len(chains_cpu), dtype=np.int64) # shape: (N*L,)
     
-    # For each amino acid, get the number of available codons
-    num_codons_per_position = amino_to_num_codons[chains_flat]  # Shape: (N*L,)
+    for i, aa in enumerate(chains_cpu):
+        aa_idx = int(aa)
+        codons = amino_to_codons.get(aa_idx, []) # e.g., for aa_idx=9 (Ile): ['ATA', 'ATC', 'ATT']
+        
+        if len(codons) == 0:
+            raise ValueError(f"No codons found for amino acid index {aa_idx}")
+        
+        # Randomly select a codon uniformly
+        random_codon = np.random.choice(codons)
+        
+        if random_codon not in codon_to_idx:
+            raise ValueError(f"Codon '{random_codon}' not found in codon_to_idx mapping")
+        
+        dna_flat[i] = codon_to_idx[random_codon]
+
     
-    # Generate random indices for codon selection (uniform within available codons)
-    random_codon_indices = torch.rand(N * L, device=device) * num_codons_per_position.float()
-    random_codon_indices = random_codon_indices.long()  # Shape: (N*L,)
-    
-    # Gather the selected codon indices using advanced indexing
-    # amino_to_codons_tensor[chains_flat[i], random_codon_indices[i]]
-    selected_codons = amino_to_codons_tensor[chains_flat, random_codon_indices]  # Shape: (N*L,)
-    
-    # Reshape back to (N, L)
-    dna_chains = selected_codons.reshape(N, L)
+    dna_chains = torch.from_numpy(dna_flat.reshape(N, L)).long().to(device)
     
     return dna_chains
 
@@ -229,10 +216,10 @@ def main():
         print(f"All {N} sequences are now identical to sequence {args.seq_index}")
         print()
     
-    # Train PCA on reference dataset
-    pca_data_path = args.pca_data
-    print(f"Training PCA on reference dataset ({pca_data_path})...")
+    # Train PCA on CM_130530_MC.fasta data
+    print("Training PCA on reference dataset (CM_130530_MC.fasta)...")
     t0 = time.time()
+    pca_data_path = "example_data/CM_130530_MC.fasta"
     if os.path.isfile(pca_data_path):
         _, pca_sequences = import_from_fasta(pca_data_path, tokens, filter_sequences=True)
         if not isinstance(pca_sequences, torch.Tensor):
@@ -262,12 +249,7 @@ def main():
     # Translate amino acid sequences to DNA codons uniformly
     print("Translating amino acid sequences to DNA codons...")
     t0 = time.time()
-    dna_chains = translate_to_dna_uniform(
-        chains, 
-        sampling_data["amino_to_codons_tensor"], 
-        sampling_data["amino_to_num_codons"], 
-        device
-    )
+    dna_chains = translate_to_dna_uniform(chains, amino_to_codons, sampling_data["codon_to_idx"], device)
     print(f"DNA sequences: {dna_chains.shape} (took {time.time()-t0:.2f}s)")
     
     # Convert amino acid chains to one-hot encoding
@@ -300,42 +282,13 @@ def main():
         print()
     
     # Run evolution
-    total_metropolis_time = 0.0
-    total_gibbs_time = 0.0
-    
-    # Pre-generate random numbers for better GPU efficiency (batch of 1000)
-    random_batch_size = min(1000, num_iterations)
-    random_batch = torch.rand(random_batch_size, N, device=device)
-    random_batch_idx = 0
-    
-    # Use compiled version if available
-    evolve_fn = evolve_sequences_compiled if COMPILE_AVAILABLE else evolve_sequences
-    if COMPILE_AVAILABLE:
-        print("Using torch.compile() with mode='max-autotune'")
-        print("First iteration will be slower due to compilation (10-30s)...\n")
-    
     for iteration in range(num_iterations):
-        if (iteration + 1) % 10000 == 0:
+        if (iteration + 1) % 1000 == 0:
             elapsed = time.time() - t_evolution_start
             iter_per_sec = (iteration + 1) / elapsed
             print(f"  Iteration {iteration + 1}/{num_iterations}... ({iter_per_sec:.1f} iter/s)")
         
-        # Detailed timing for first iteration to identify bottlenecks
-        if iteration == 0:
-            t_evolve = time.time()
-        
-        # Get pre-generated random value for this iteration
-        p_values = random_batch[random_batch_idx]
-        random_batch_idx += 1
-        
-        # Regenerate random batch when exhausted
-        if random_batch_idx >= random_batch_size and iteration + 1 < num_iterations:
-            remaining = num_iterations - (iteration + 1)
-            random_batch_size = min(1000, remaining)
-            random_batch = torch.rand(random_batch_size, N, device=device)
-            random_batch_idx = 0
-        
-        current_chains, current_dna_chains, metro_time, gibbs_time = evolve_fn(
+        current_chains, current_dna_chains = evolve_sequences(
             chains=current_chains,
             dna_chains=current_dna_chains,
             params=params,
@@ -345,29 +298,17 @@ def main():
             num_options=sampling_data["num_options"],
             codon_usage=sampling_data["codon_usage"],
             p=args.p_metropolis,
-            p_values=p_values,  # Pre-generated random values
             device=device,
             dtype=dtype,
             beta=1.0
         )
         
-        total_metropolis_time += metro_time
-        total_gibbs_time += gibbs_time
-        
-        if iteration == 0:
-            first_evolve_time = time.time() - t_evolve
-            print(f"  First evolve_sequences call: {first_evolve_time:.4f}s")
-            print(f"    - Metropolis: {metro_time:.4f}s")
-            print(f"    - Gibbs: {gibbs_time:.4f}s")
-        
         # Print correlation every 100 iterations
-        if (iteration + 1) % 10000 == 0 and pi_target is not None and pij_target is not None:
-            t_corr = time.time()
+        if (iteration + 1) % 1000 == 0 and pi_target is not None and pij_target is not None:
             pearson = compute_correlations(pi_target, pij_target, current_chains)
             correlation_history.append(pearson)
             iteration_checkpoints.append(iteration + 1)
-            corr_time = time.time() - t_corr
-            print(f"    Iteration {iteration + 1}: Pearson correlation = {pearson:.6f} (compute_correlations: {corr_time:.4f}s)")
+            print(f"    Iteration {iteration + 1}: Pearson correlation = {pearson:.6f}")
     
     # Get final state
     final_chains_aa = current_chains.argmax(dim=-1)  # Convert one-hot to indices (N, L)
@@ -399,21 +340,21 @@ def main():
     print(f"  Total iterations: {num_iterations}")
     print(f"  Evolution time: {evolution_time:.2f}s ({num_iterations/evolution_time:.1f} iter/s)")
     print(f"  Final chains: {current_chains.shape}")
-    print(f"\nSampling method breakdown:")
-    print(f"  Metropolis total time: {total_metropolis_time:.2f}s ({100*total_metropolis_time/evolution_time:.1f}%)")
-    print(f"  Gibbs total time:      {total_gibbs_time:.2f}s ({100*total_gibbs_time/evolution_time:.1f}%)")
     print(f"  Final DNA chains: {current_dna_chains.shape}")
     print()
     
     # Save results to file
     print("Saving evolution results...")
+    t_save_start = time.time()
     output_file = os.path.join(args.output, "evolution_results.txt")
     
     # Check for gap mutations (gap should NEVER mutate)
+    t0 = time.time()
     gap_positions_initial = (initial_chains_aa == 0).cpu().numpy()
     gap_positions_final = (final_chains_aa == 0).cpu().numpy()
     gap_mutations = gap_positions_initial != gap_positions_final
     total_gap_mutations = gap_mutations.sum()
+    print(f"  Gap check: {time.time()-t0:.2f}s")
     
     if total_gap_mutations > 0:
         print(f"WARNING: Found {total_gap_mutations} gap mutations! Gaps should NEVER mutate.")
@@ -465,16 +406,23 @@ def main():
         
         # Show first 5 sequences
         num_display = min(5, N)
+        
+        # Batch transfer to CPU once (più efficiente)
+        initial_aa_batch = initial_chains_aa[:num_display].cpu().numpy()
+        initial_dna_batch = initial_dna_chains[:num_display].cpu().numpy()
+        final_aa_batch = final_chains_aa[:num_display].cpu().numpy()
+        final_dna_batch = final_dna_chains[:num_display].cpu().numpy()
+        
         for seq_idx in range(num_display):
             f.write("=" * 80 + "\n")
             f.write(f"SEQUENCE {seq_idx + 1}\n")
             f.write("=" * 80 + "\n\n")
             
-            # Get sequences
-            initial_aa = initial_chains_aa[seq_idx].cpu().numpy()
-            initial_dna = initial_dna_chains[seq_idx].cpu().numpy()
-            final_aa = final_chains_aa[seq_idx].cpu().numpy()
-            final_dna = final_dna_chains[seq_idx].cpu().numpy()
+            # Get sequences from batch
+            initial_aa = initial_aa_batch[seq_idx]
+            initial_dna = initial_dna_batch[seq_idx]
+            final_aa = final_aa_batch[seq_idx]
+            final_dna = final_dna_batch[seq_idx]
             
             # Initial state
             f.write("BEFORE EVOLUTION:\n")
@@ -530,20 +478,23 @@ def main():
             else:
                 f.write("No codon changes.\n\n")
     
-    print(f"Results saved to {output_file}")
+    save_time = time.time() - t_save_start
+    print(f"Results saved to {output_file} (took {save_time:.2f}s)")
     print()
     
     # Save correlation history
     if len(correlation_history) > 0:
         print("Saving correlation history...")
+        t0 = time.time()
         correlation_file = os.path.join(args.output, "correlation_history.txt")
         with open(correlation_file, "w") as f:
             f.write("Iteration\tPearson_Correlation\n")
             for iter_num, pearson in zip(iteration_checkpoints, correlation_history):
                 f.write(f"{iter_num}\t{pearson:.6f}\n")
-        print(f"Correlation history saved to {correlation_file}")
+        print(f"Correlation history saved to {correlation_file} (took {time.time()-t0:.2f}s)")
         
         # Plot correlation evolution
+        t0 = time.time()
         plt.figure(figsize=(10, 6))
         plt.plot(iteration_checkpoints, correlation_history, 'b-', linewidth=2)
         plt.xlabel('Iteration', fontsize=12)
@@ -555,7 +506,7 @@ def main():
         correlation_plot_path = os.path.join(args.output, "correlation_evolution.png")
         plt.savefig(correlation_plot_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"Correlation plot saved to {correlation_plot_path}")
+        print(f"Correlation plot saved to {correlation_plot_path} (took {time.time()-t0:.2f}s)")
         print()
     
     # PCA projection and visualization

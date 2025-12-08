@@ -496,6 +496,33 @@ def precompute_sampling_tensors(
     for codon_idx, codon_str in enumerate(all_codons):
         codon_to_aa_idx[codon_idx] = codon_to_amino[codon_str]
     
+    # Pre-compute tensors for Metropolis sampling (bottleneck optimization)
+    # Find gap codon index (gap is '---')
+    gap_codon_str = '---'
+    gap_codon_idx = all_codons.index(gap_codon_str) if gap_codon_str in all_codons else 0
+    
+    # Build non-gap codon indices tensor (all codons except gap)
+    non_gap_codon_indices = [i for i, codon in enumerate(all_codons) if codon != gap_codon_str]
+    non_gap_codon_tensor = torch.tensor(non_gap_codon_indices, dtype=torch.long, device=device)
+    
+    # Pre-compute tensors for translate_to_dna_uniform (bottleneck optimization #1)
+    # Build amino_to_codons_tensor: for each amino acid, store list of codon indices
+    # Structure: (num_aa, max_codons_per_aa) with -1 padding for unused slots
+    max_codons_per_aa = max(len(codons) for codons in amino_to_codons.values())
+    amino_to_codons_tensor = torch.full(
+        (num_amino_acids, max_codons_per_aa), 
+        -1, 
+        dtype=torch.long, 
+        device=device
+    )
+    amino_to_num_codons = torch.zeros(num_amino_acids, dtype=torch.long, device=device)
+    
+    for aa_idx, codon_list in amino_to_codons.items():
+        num_codons_for_aa = len(codon_list)
+        amino_to_num_codons[aa_idx] = num_codons_for_aa
+        for i, codon_str in enumerate(codon_list):
+            amino_to_codons_tensor[aa_idx, i] = codon_to_idx[codon_str]
+    
     return {
         "codon_to_amino": codon_to_amino,
         "amino_to_codons": amino_to_codons,
@@ -508,5 +535,9 @@ def precompute_sampling_tensors(
         "codon_to_idx": codon_to_idx,
         "all_codons": all_codons,
         "codon_usage": codon_usage,
-        "codon_to_aa_idx": codon_to_aa_idx
+        "codon_to_aa_idx": codon_to_aa_idx,
+        "gap_codon_idx": gap_codon_idx,
+        "non_gap_codon_tensor": non_gap_codon_tensor,
+        "amino_to_codons_tensor": amino_to_codons_tensor,
+        "amino_to_num_codons": amino_to_num_codons
     }
