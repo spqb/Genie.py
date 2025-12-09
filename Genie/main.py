@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from adabmDCA import get_tokens, import_from_fasta, load_params
 from adabmDCA.statmech import compute_energy
+from adabmDCA.dataset import DatasetDCA
 
 from .utils.parser import parse_arguments
 from .utils.codon_utils import precompute_sampling_tensors
@@ -231,25 +232,44 @@ def main():
     
     # Train PCA on reference dataset
     pca_data_path = args.pca_data
+    clustering_seqid = 0.8 
+    no_reweighting = False
     print(f"Training PCA on reference dataset ({pca_data_path})...")
     t0 = time.time()
     if os.path.isfile(pca_data_path):
-        _, pca_sequences = import_from_fasta(pca_data_path, tokens, filter_sequences=True)
+        dataset =  dataset = DatasetDCA(
+            path_data=pca_data_path,
+            path_weights=None,
+            alphabet=tokens,
+            clustering_th=clustering_seqid,
+            no_reweighting=no_reweighting,
+            filter_sequences=True,
+            remove_duplicates=True,
+            device=device,
+            dtype=dtype,
+            message=False,
+        )
+        
+        pca_sequences = dataset.data  # (N_ref, L) tensor of amino acid indices 
+        pca_weights = dataset.weights.squeeze()  # (N_ref,) tensor of sequence weights
+        print("pca_weights:", pca_weights.shape)
         if not isinstance(pca_sequences, torch.Tensor):
             pca_sequences = torch.tensor(pca_sequences, dtype=torch.long)
         pca_sequences = pca_sequences.to(device)
         
         # Convert to one-hot encoding
-        pca_sequences_onehot = torch.nn.functional.one_hot(pca_sequences.long(), num_classes=q).to(dtype).to(device)
+        pca_sequences_onehot = pca_sequences #torch.nn.functional.one_hot(pca_sequences.long(), num_classes=q).to(dtype).to(device)
         print(f"PCA training data: {pca_sequences_onehot.shape}")
         
         # Train PCA
-        pca = train_pca(pca_sequences_onehot, n_components=2)
+        pca = train_pca(pca_sequences_onehot, n_components=2, weights=pca_weights)
         print(f"PCA trained: {pca.n_components} components, explained variance: {pca.explained_variance_ratio_}")
         
         # Compute target statistics for correlation tracking
         print("Computing target statistics...")
-        pi_target, pij_target = compute_target_statistics(pca_sequences_onehot)
+       
+        pseudocount = 1. / dataset.weights.sum().item()
+        pi_target, pij_target = compute_target_statistics(pca_sequences_onehot, weights=pca_weights, pseudo_count=pseudocount)
         print(f"PCA and statistics computed (took {time.time()-t0:.2f}s)")
         print()
     else:
@@ -366,8 +386,18 @@ def main():
             pearson = compute_correlations(pi_target, pij_target, current_chains)
             correlation_history.append(pearson)
             iteration_checkpoints.append(iteration + 1)
+            
+            # Compute gap frequencies (pi_target[:, 0] is gap frequency at each position)
+            gap_freq_target = pi_target[:, 0].cpu()  # Shape: (L,)
+            pi_chains, _ = compute_target_statistics(current_chains)
+            gap_freq_current = pi_chains[:, 0].cpu() # Shape: (L,)
+            gap_freq_diff = np.abs(gap_freq_target - gap_freq_current)
+            max_gap_diff = gap_freq_diff.max()
+            mean_gap_diff = gap_freq_diff.mean()
+            pearson_gap = np.corrcoef(gap_freq_target, gap_freq_current)[0,1]
+            
             corr_time = time.time() - t_corr
-            print(f"    Iteration {iteration + 1}: Pearson correlation = {pearson:.6f} (compute_correlations: {corr_time:.4f}s)")
+            print(f"    Iteration {iteration + 1}: Pearson = {pearson:.6f} | Gap freq diff: max={max_gap_diff:.4f}, mean={mean_gap_diff:.4f}, Pearson gap = {pearson_gap:.6f} (time: {corr_time:.4f}s)")
     
     # Get final state
     final_chains_aa = current_chains.argmax(dim=-1)  # Convert one-hot to indices (N, L)

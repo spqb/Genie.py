@@ -8,6 +8,8 @@ test_output/
 docs/
 test_coherence.py
 pearson_tracking/
+sampling_CM/
+sampling_pf14/
 
 # Source folders (keeping only Genie)
 src/

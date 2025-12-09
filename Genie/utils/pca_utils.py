@@ -8,13 +8,14 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 
-def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2):
+def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2, weights: torch.Tensor = None):
     """
-    Train PCA on one-hot encoded sequences.
+    Train PCA on one-hot encoded sequences with optional sequence weighting.
     
     Args:
         sequences_onehot: One-hot encoded sequences (N, L, q)
         n_components: Number of principal components
+        weights: Sequence weights (N,) for reweighting, optional
     
     Returns:
         Fitted PCA object
@@ -24,9 +25,33 @@ def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2):
     # Flatten sequences to (N, L*q)
     sequences_flat = sequences_onehot.reshape(N, L * q).cpu().numpy()
     
-    # Train PCA
+    # Convert weights to numpy if provided
+    if weights is not None:
+        weights_np = weights.cpu().numpy() if isinstance(weights, torch.Tensor) else weights
+        # Normalize weights to sum to N (preserve sample size)
+        weights_np = weights_np * (N / weights_np.sum())
+    else:
+        weights_np = None
+    
+    # Train PCA with weighted samples
     pca = PCA(n_components=n_components)
-    pca.fit(sequences_flat)
+    
+    if weights_np is not None:
+        # Weighted PCA: center data with weights, then compute covariance
+        mean_weighted = np.average(sequences_flat, axis=0, weights=weights_np)
+        sequences_centered = sequences_flat - mean_weighted
+        
+        # Weight the centered data
+        sequences_weighted = sequences_centered * np.sqrt(weights_np)[:, np.newaxis]
+        
+        # Fit PCA on weighted data
+        pca.fit(sequences_weighted)
+        
+        # Adjust mean to use weighted mean
+        pca.mean_ = mean_weighted
+    else:
+        # Standard PCA without weights
+        pca.fit(sequences_flat)
     
     return pca
 

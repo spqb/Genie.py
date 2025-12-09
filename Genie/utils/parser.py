@@ -31,6 +31,13 @@ def parse_arguments():
         default=None,
         help='Path to the initial sequences file (optional, if not provided chains are initialized randomly)'
     )
+
+    # parser.add_argument(
+    #     '-w' , '--path_weights',
+    #     type=str,
+    #     default=None,
+    #     help='Path to the sequence weights file (optional, if not provided uniform weights are used)'
+    # )
     
     # Optional arguments
     parser.add_argument(
@@ -81,7 +88,7 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--pca_data',
+        '-d', '--pca_data',
         type=str,
         required=True,
         help='Path to the reference dataset for PCA training (required)'

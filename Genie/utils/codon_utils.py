@@ -151,11 +151,20 @@ def build_codon_neighbor_tensor(
             - codon_to_idx: Dictionary mapping codon strings to indices
             - all_codons: List of all codon strings
     """
-    # Create codon to index mapping - include gap '---' even though it has no neighbors
+    # Create codon to index mapping - include gap '---' and stop codons even though they have no neighbors
+    STOP_CODONS = ['TAA', 'TAG', 'TGA']  # 3 stop codons
     all_codons = sorted(codon_neighbors.keys())
+    
     # Add gap codon if not present (it won't be in codon_neighbors since it can't mutate)
     if '---' not in all_codons and '---' in codon_to_amino:
         all_codons = ['---'] + all_codons  # Add gap at the beginning
+    
+    # Add stop codons at the end (they can be proposed but immediately rejected)
+    # Total: 1 gap + 61 coding + 3 stop = 65 codons
+    for stop_codon in sorted(STOP_CODONS):
+        if stop_codon not in all_codons:
+            all_codons.append(stop_codon)
+    
     codon_to_idx = {codon: idx for idx, codon in enumerate(all_codons)}
     num_codons = len(all_codons)
     
@@ -222,11 +231,20 @@ def build_codon_mutation_lookup(
         - codon_to_idx: Dictionary mapping codon strings to indices
         - idx_to_codon: List mapping indices back to codon strings
     """
-    # Create codon mappings - include gap '---' even though it has no neighbors
+    # Create codon mappings - include gap '---' and stop codons even though they have no neighbors
+    STOP_CODONS = ['TAA', 'TAG', 'TGA']  # 3 stop codons
     all_codons = sorted(codon_neighbors.keys())
+    
     # Add gap codon if not present (it won't be in codon_neighbors since it can't mutate)
     if '---' not in all_codons and '---' in codon_to_amino:
         all_codons = ['---'] + all_codons  # Add gap at the beginning
+    
+    # Add stop codons at the end (they can be proposed but immediately rejected)
+    # Total: 1 gap + 61 coding + 3 stop = 65 codons
+    for stop_codon in sorted(STOP_CODONS):
+        if stop_codon not in all_codons:
+            all_codons.append(stop_codon)
+    
     codon_to_idx = {codon: idx for idx, codon in enumerate(all_codons)}
     num_codons = len(all_codons)
     num_aa = 21  # Including gap
@@ -411,12 +429,19 @@ def build_codon_usage_tensor(
     num_codons = len(all_codons)
     codon_usage_tensor = torch.zeros(num_codons, dtype=torch.float32, device=device)
     
+    # Stop codons should have 0 usage (will be rejected anyway)
+    STOP_CODONS = {'TAA', 'TAG', 'TGA'}
+    
     # Fill tensor with usage frequencies
     for codon, idx in codon_to_idx.items():
-        if codon in codon_usage_dict:
+        if codon in STOP_CODONS:
+            codon_usage_tensor[idx] = 0.0  # Stop codons have 0 usage
+        elif codon in codon_usage_dict:
             codon_usage_tensor[idx] = codon_usage_dict[codon]
+        elif codon == '---':
+            codon_usage_tensor[idx] = 1.0  # Gap has neutral usage
         else:
-            raise ValueError(f"Codon '{codon}' not found in codon_usage_dict. All codons must have usage frequencies defined.")
+            raise ValueError(f"Codon '{codon}' not found in codon_usage_dict. All non-stop codons must have usage frequencies defined.")
     
     return codon_usage_tensor
 
@@ -491,19 +516,48 @@ def precompute_sampling_tensors(
     
     # Build codon_to_aa_idx tensor: maps each codon index to its amino acid index
     # This eliminates the slow CPU loop in gibbs_step_batch
+    # Stop codons don't have amino acids, map them to gap (index 0) - they'll be rejected anyway
+    STOP_CODONS = {'TAA', 'TAG', 'TGA'}
     num_codons = len(all_codons)
     codon_to_aa_idx = torch.zeros(num_codons, dtype=torch.long, device=device)
     for codon_idx, codon_str in enumerate(all_codons):
-        codon_to_aa_idx[codon_idx] = codon_to_amino[codon_str]
+        if codon_str in STOP_CODONS:
+            codon_to_aa_idx[codon_idx] = 0  # Map stop codons to gap (will be rejected)
+        else:
+            codon_to_aa_idx[codon_idx] = codon_to_amino[codon_str]
     
     # Pre-compute tensors for Metropolis sampling (bottleneck optimization)
     # Find gap codon index (gap is '---')
     gap_codon_str = '---'
     gap_codon_idx = all_codons.index(gap_codon_str) if gap_codon_str in all_codons else 0
     
-    # Build non-gap codon indices tensor (all codons except gap)
+    # Build non-gap codon indices tensor (ALL 64 codons except gap, INCLUDING stop codons)
+    # Stop codons can be proposed but will be rejected in acceptance calculation
     non_gap_codon_indices = [i for i, codon in enumerate(all_codons) if codon != gap_codon_str]
     non_gap_codon_tensor = torch.tensor(non_gap_codon_indices, dtype=torch.long, device=device)
+    
+    # Build stop codon indices tensor for rejection
+    STOP_CODONS = {'TAA', 'TAG', 'TGA'}
+    stop_codon_indices = [i for i, codon in enumerate(all_codons) if codon in STOP_CODONS]
+    stop_codon_indices_tensor = torch.tensor(stop_codon_indices, dtype=torch.long, device=device)
+    
+    # GPU OPTIMIZATION: Pre-compute boolean mask for stop codons (faster than torch.isin)
+    stop_codon_mask = torch.zeros(num_codons, dtype=torch.bool, device=device)
+    stop_codon_mask[stop_codon_indices] = True
+    
+    # GPU OPTIMIZATION: Pre-compute one-hot encoding for all codons (avoids repeated one_hot() calls)
+    # Shape: (num_codons, num_amino_acids) - direct lookup codon_to_aa_onehot[codon_idx]
+    num_aa = len(tokens)
+    codon_to_aa_onehot = torch.zeros(num_codons, num_aa, dtype=torch.float32, device=device)
+    for codon_idx in range(num_codons):
+        aa_idx = codon_to_aa_idx[codon_idx].item()
+        codon_to_aa_onehot[codon_idx, aa_idx] = 1.0
+    
+    # GPU OPTIMIZATION: Pre-allocate tensor for gap proposals (avoids torch.full() every iteration)
+    gap_tensor = torch.full((max(1000, num_codons),), gap_codon_idx, dtype=torch.long, device=device)
+    
+    # GPU OPTIMIZATION: Pre-compute log(codon_usage) to avoid repeated log() calls
+    log_codon_usage = torch.log(codon_usage + 1e-10)
     
     # Pre-compute tensors for translate_to_dna_uniform (bottleneck optimization #1)
     # Build amino_to_codons_tensor: for each amino acid, store list of codon indices
@@ -538,6 +592,12 @@ def precompute_sampling_tensors(
         "codon_to_aa_idx": codon_to_aa_idx,
         "gap_codon_idx": gap_codon_idx,
         "non_gap_codon_tensor": non_gap_codon_tensor,
+        "stop_codon_indices": stop_codon_indices_tensor,
         "amino_to_codons_tensor": amino_to_codons_tensor,
-        "amino_to_num_codons": amino_to_num_codons
+        "amino_to_num_codons": amino_to_num_codons,
+        # GPU optimizations (pre-computed tensors)
+        "stop_codon_mask": stop_codon_mask,
+        "codon_to_aa_onehot": codon_to_aa_onehot,
+        "gap_tensor": gap_tensor,
+        "log_codon_usage": log_codon_usage
     }

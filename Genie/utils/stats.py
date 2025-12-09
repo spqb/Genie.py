@@ -71,7 +71,7 @@ def track_evolution_statistics(
     }
 
 
-def compute_target_statistics(sequences: torch.Tensor) -> tuple:
+def compute_target_statistics(sequences: torch.Tensor, weights: torch.Tensor = None, pseudo_count=0):
     """
     Compute target statistics from reference sequences.
     
@@ -81,7 +81,7 @@ def compute_target_statistics(sequences: torch.Tensor) -> tuple:
     Returns:
         tuple: (pi_target, pij_target)
     """
-    pi_target = get_freq_single_point(data=sequences)
-    pij_target = get_freq_two_points(data=sequences)
+    pi_target = get_freq_single_point(data=sequences, weights=weights, pseudo_count=pseudo_count)
+    pij_target = get_freq_two_points(data=sequences, weights=weights, pseudo_count=pseudo_count)
     
     return pi_target, pij_target
