@@ -11,8 +11,7 @@ pearson_tracking/
 sampling_CM/
 sampling_pf14/
 
-# Source folders (keeping only Genie)
-src/
+
 
 # Python
 __pycache__/
@@ -55,3 +54,9 @@ Thumbs.db
 # Test files and logs
 run.log
 test_random_init.py
+CHANGES.md
+TEST_GENIE/
+TEST_GENIE_AA/
+nohup.out
+test_genie_pf14_10kchains/
+test_genie_pf14_5kchains/

@@ -207,7 +207,16 @@ def evolve_sequences(
     # Update chains in-place
     chains[batch_arange, selected_sites] = final_aa_onehot
     dna_chains[batch_arange, selected_sites] = final_codon
+
+
+    # also output a tensor containing where you have selcted sites and the new aa 
+    selected_sites_tensor = selected_sites.unsqueeze(-1)  # (N, 1)
+    # not in one hot
+    new_aa_tensor = final_aa_onehot.argmax(dim=-1)  # (N,)
+    # put the tensor together in shape (N, 2)
+    mutation_info_tensor = torch.cat((selected_sites_tensor, new_aa_tensor.unsqueeze(-1)), dim=-1)  # (N, 2)
+    # You can return these tensors if needed for analysis
     
     # Return timing (0 since unified kernel)
-    return chains, dna_chains, 0.0, 0.0
+    return chains, dna_chains, mutation_info_tensor
 

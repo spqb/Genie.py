@@ -1,19 +1,19 @@
 """
-Argument parser for Genie (codon-aware) application.
-Handles command-line argument parsing for DNA sequence evolution with codon awareness.
+Argument parser for Genie-AA (amino acid only) application.
+Handles command-line argument parsing for sequence evolution without codon awareness.
 """
 import argparse
 
 
 def parse_arguments():
     """
-    Parse command line arguments for the Genie application.
+    Parse command line arguments for the Genie-AA application.
     
     Returns:
         argparse.Namespace: Parsed arguments with validated values
     """
     parser = argparse.ArgumentParser(
-        description="Genie 2.0 - Codon-aware sequence evolution using DCA models with Metropolis-Hastings and Gibbs sampling",
+        description="Genie-AA 2.0 - Amino acid sequence evolution using DCA models and Gibbs sampling",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -38,7 +38,7 @@ def parse_arguments():
         default=None,
         help='Path to initial sequences file in FASTA format (if not provided, sequences are initialized randomly)'
     )
-
+    
     parser.add_argument(
         '-o', '--output',
         type=str,
@@ -54,7 +54,7 @@ def parse_arguments():
         '--seq_index',
         type=int,
         default=None,
-        help='Index of a single sequence to replicate N times (optional, for starting from one wild-type sequence)'
+        help='Index of a single sequence to replicate N times (optional, for starting from one sequence)'
     )
     
     parser.add_argument(
@@ -69,13 +69,6 @@ def parse_arguments():
     # ============================================================================
     
     parser.add_argument(
-        '--p_metropolis',
-        type=float,
-        default=0.5,
-        help='Probability threshold for Metropolis vs Gibbs sampling (0.0=only Metropolis for gaps, 1.0=only Gibbs, 0.5=50/50 mix)'
-    )
-    
-    parser.add_argument(
         '--num_iterations',
         type=int,
         default=50000,
@@ -83,9 +76,10 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--no-correlation-tracking',
-        action='store_true',
-        help='Disable correlation tracking during evolution (faster, avoids GPU-CPU data transfers)'
+        "--alphabet",           
+        type=str,   
+        default="protein",    
+        help="Type of encoding for sequences. Choose from ['protein', 'rna', 'dna'] or provide custom token string"
     )
     
     # ============================================================================
@@ -99,6 +93,24 @@ def parse_arguments():
         help='Path to reference dataset for PCA training (currently not used in main workflow)'
     )
     
+    # ============================================================================
+    # HARDWARE/PERFORMANCE OPTIONS
+    # ============================================================================
+    
+    parser.add_argument(
+        '--device',
+        type=str,
+        default="cuda",
+        help="Device to use for computation ('cuda' for GPU, 'cpu' for CPU)"
+    )
+
+    parser.add_argument(
+        "--dtype",
+        type=str,   
+        default="float32",    
+        help="Data type for tensor computations ('float32' or 'float64')"
+    )
+
     # ============================================================================
     # ARGUMENT VALIDATION
     # ============================================================================

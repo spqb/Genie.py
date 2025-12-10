@@ -17,6 +17,7 @@ setup(
     entry_points={
         "console_scripts": [
             "genie=Genie.main:main",
+            "genie-aa=Genie_aa.main:main",
         ],
     },
     classifiers=[
