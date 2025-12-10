@@ -261,8 +261,8 @@ def main():
         pca_sequences_onehot = pca_sequences #torch.nn.functional.one_hot(pca_sequences.long(), num_classes=q).to(dtype).to(device)
         print(f"PCA training data: {pca_sequences_onehot.shape}")
         
-        # Train PCA
-        pca = train_pca(pca_sequences_onehot, n_components=2, weights=pca_weights)
+        # Train PCA (with automatic subsampling if N > 5000)
+        pca, pca_subsample_indices = train_pca(pca_sequences_onehot, n_components=2, weights=pca_weights, max_samples=5000)
         print(f"PCA trained: {pca.n_components} components, explained variance: {pca.explained_variance_ratio_}")
         
         # Compute target statistics for correlation tracking
@@ -275,6 +275,7 @@ def main():
     else:
         print(f"Warning: PCA training data not found at {pca_data_path}. Skipping PCA analysis.")
         pca = None
+        pca_subsample_indices = None
         pi_target = None
         pij_target = None
         print()
@@ -593,8 +594,14 @@ def main():
         print("Performing PCA analysis...")
         t0 = time.time()
         
-        # Project natural sequences (from CM_130530_MC.fasta)
-        natural_projection = project_sequences(pca_sequences_onehot, pca)
+        # Project natural sequences (use subsampled if available)
+        if pca_subsample_indices is not None:
+            pca_sequences_for_plot = pca_sequences_onehot[pca_subsample_indices]
+            print(f"  Using {len(pca_subsample_indices)} subsampled natural sequences for plotting")
+        else:
+            pca_sequences_for_plot = pca_sequences_onehot
+        
+        natural_projection = project_sequences(pca_sequences_for_plot, pca)
         print(f"  Natural sequences projected: {natural_projection.shape}")
         
         # Project initial and final sequences

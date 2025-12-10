@@ -8,19 +8,36 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 
-def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2, weights: torch.Tensor = None):
+def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2, weights: torch.Tensor = None, max_samples: int = 5000):
     """
     Train PCA on one-hot encoded sequences with optional sequence weighting.
+    
+    If N > max_samples, subsample max_samples sequences randomly for PCA training.
     
     Args:
         sequences_onehot: One-hot encoded sequences (N, L, q)
         n_components: Number of principal components
         weights: Sequence weights (N,) for reweighting, optional
+        max_samples: Maximum number of samples to use for PCA training (default: 5000)
     
     Returns:
-        Fitted PCA object
+        Tuple: (pca, subsample_indices)
+            - pca: Fitted PCA object
+            - subsample_indices: Indices of subsampled sequences (None if no subsampling)
     """
     N, L, q = sequences_onehot.shape
+    
+    # Subsample if N > max_samples
+    subsample_indices = None
+    if N > max_samples:
+        print(f"  Subsampling {max_samples} sequences from {N} for PCA training...")
+        # Random sampling
+        subsample_indices = np.random.choice(N, size=max_samples, replace=False)
+        subsample_indices.sort()  # Sort for reproducibility
+        sequences_onehot = sequences_onehot[subsample_indices]
+        if weights is not None:
+            weights = weights[subsample_indices]
+        N = max_samples
     
     # Flatten sequences to (N, L*q)
     sequences_flat = sequences_onehot.reshape(N, L * q).cpu().numpy()
@@ -53,7 +70,7 @@ def train_pca(sequences_onehot: torch.Tensor, n_components: int = 2, weights: to
         # Standard PCA without weights
         pca.fit(sequences_flat)
     
-    return pca
+    return pca, subsample_indices
 
 
 def project_sequences(sequences_onehot: torch.Tensor, pca):

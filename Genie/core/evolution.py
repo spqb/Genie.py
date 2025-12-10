@@ -83,7 +83,6 @@ def evolve_sequences(
     non_gap_codon_tensor = params["non_gap_codon_tensor"]
     stop_codon_mask = params["stop_codon_mask"]
     codon_to_aa_onehot = params["codon_to_aa_onehot"]
-    gap_tensor = params["gap_tensor"]
     log_codon_usage = params["log_codon_usage"]
     codon_to_aa_idx = params["codon_to_aa_idx"]
     
@@ -109,7 +108,8 @@ def evolve_sequences(
     
     # Combine proposals efficiently (no clone, direct where chain)
     # Priority: is_gap → random, propose_gap → gap, else → current
-    gap_proposal = gap_tensor[:N]
+    # Create gap_proposal dynamically (torch.full is extremely fast on GPU)
+    gap_proposal = torch.full((N,), gap_idx, dtype=torch.long, device=device)
     metro_proposed_codon = torch.where(
         is_gap, 
         random_non_gap_codon,
