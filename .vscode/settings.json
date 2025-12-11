@@ -1,7 +1,0 @@
-{
-  "terminal.integrated.cwd": "${workspaceFolder}",
-  "terminal.integrated.shellArgs.linux": [
-    "--rcfile",
-    "${workspaceFolder}/.bashrc"
-  ]
-}
