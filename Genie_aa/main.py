@@ -46,6 +46,19 @@ def main():
     args = parse_arguments()
 
     # ========================================================================
+    # Redirect stdout and stderr to log file
+    # ========================================================================
+    folder = args.output
+    os.makedirs(folder, exist_ok=True)
+    log_file = os.path.join(folder, "genie.log")
+    log_handle = open(log_file, "w")
+    sys.stdout = log_handle
+    sys.stderr = log_handle
+    # Force unbuffered output
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
+    # ========================================================================
     # Configuration Display
     # ========================================================================
     print("\n" + "="*80)
@@ -53,10 +66,6 @@ def main():
     print("="*80 + "\n")
 
     beta = 1  # Inverse temperature (fixed at 1.0 for standard sampling)
-    
-    # Create output directory
-    folder = args.output
-    os.makedirs(folder, exist_ok=True)
 
     # ========================================================================
     # Device and Alphabet Setup
@@ -470,7 +479,11 @@ def main():
     print("  SAMPLING COMPLETED SUCCESSFULLY")
     print("=" * 80)
     print(f"\n  Output folder: {str(folder)}")
+    print(f"  Log file: {log_file}")
     print("\n" + "=" * 80 + "\n")
+    
+    # Close log file
+    log_handle.close()
     
     
 if __name__ == "__main__":

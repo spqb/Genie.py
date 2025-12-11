@@ -123,6 +123,19 @@ def main():
     # ========================================================================
     args = parse_arguments()
     
+    # ========================================================================
+    # Redirect stdout and stderr to log file
+    # ========================================================================
+    folder = args.output
+    os.makedirs(folder, exist_ok=True)
+    log_file = os.path.join(folder, "genie.log")
+    log_handle = open(log_file, "w")
+    sys.stdout = log_handle
+    sys.stderr = log_handle
+    # Force unbuffered output
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+    
     # Validate input files exist
     if args.path_chains is not None and not os.path.isfile(args.path_chains):
         print(f"Error: Sequences file not found: {args.path_chains}", file=sys.stderr)
@@ -131,10 +144,6 @@ def main():
     if not os.path.isfile(args.path_params):
         print(f"Error: Parameters file not found: {args.path_params}", file=sys.stderr)
         sys.exit(1)
-    
-    # Create output directory
-    folder = args.output
-    os.makedirs(folder, exist_ok=True)
     
     # ========================================================================
     # Device Setup and Configuration
@@ -691,7 +700,11 @@ def main():
     print("  SAMPLING COMPLETED SUCCESSFULLY")
     print("=" * 80)
     print(f"\n  Output folder: {str(folder)}")
+    print(f"  Log file: {log_file}")
     print("\n" + "=" * 80 + "\n")
+    
+    # Close log file
+    log_handle.close()
     
 
 if __name__ == "__main__":
