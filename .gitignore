@@ -60,3 +60,10 @@ TEST_GENIE_AA/
 nohup.out
 test_genie_pf14_10kchains/
 test_genie_pf14_5kchains/
+TEST/
+TEST_aa/
+notebooks/
+test_checkpoint/
+test_checkpoint_genie/
+test_vector/
+test_vector_genie/
