@@ -8,6 +8,9 @@ from .utils import (
     parse_arguments
 )
 
+# Import reconstruction functions from scripts
+from scripts import reconstruct_at_timesteps, reconstruct_chains_from_log
+
 __version__ = "2.0.0"
 __all__ = [
     "main",
@@ -15,7 +18,9 @@ __all__ = [
     "build_codon_neighbors",
     "build_codon_to_index_map",
     "build_amino_to_codons_map",
-    "parse_arguments"
+    "parse_arguments",
+    "reconstruct_at_timesteps",
+    "reconstruct_chains_from_log"
 ]
 
 

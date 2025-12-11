@@ -18,6 +18,8 @@ setup(
         "console_scripts": [
             "genie=Genie.main:main",
             "genie-aa=Genie_aa.main:main",
+            "reconstruct_chains=scripts.reconstruct_chains:main",
+            "reconstruct_at_timesteps=scripts.reconstruct_at_timesteps:main",
         ],
     },
     classifiers=[

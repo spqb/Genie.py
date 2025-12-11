@@ -87,6 +87,19 @@ def main():
     
     if not os.path.exists(args.path_params):
         raise FileNotFoundError(f"Parameters file {args.path_params} not found.")
+    
+    # ========================================================================
+    # Parse save_steps: can be int (periodic) or list (specific iterations)
+    # ========================================================================
+    if ',' in args.save_steps:
+        # Comma-separated list of specific iterations
+        save_steps_list = sorted([int(x.strip()) for x in args.save_steps.split(',')])
+        save_steps_set = set(save_steps_list)
+        save_mode = "list"
+    else:
+        # Single integer for periodic checkpoints
+        save_steps_period = int(args.save_steps)
+        save_mode = "periodic"
         
     # ========================================================================
     # DCA Model Loading
@@ -138,6 +151,10 @@ def main():
                 print(f"  ✓ Using {N_chains} sequences")
             
         samples = samples.to(device)  # Move to GPU/CPU
+        
+        # Convert indices to one-hot if needed (sampler expects one-hot encoding)
+        if samples.dim() == 2:
+            samples = torch.nn.functional.one_hot(samples, num_classes=q).to(dtype)
 
     else:
         # Initialize random sequences
@@ -223,12 +240,66 @@ def main():
             "pearson" : [],
         }
 
+        # ====================================================================
+        # Save initial chains before MCMC
+        # ====================================================================
+        initial_chains_file = os.path.join(folder, "initial_chains.fasta")
+        # Convert indices to amino acid letters
+        initial_samples_idx = samples.argmax(dim=-1) if samples.dim() == 3 else samples
+        initial_headers = []
+        initial_sequences = []
+        for i in range(initial_samples_idx.shape[0]):
+            seq = "".join([tokens[idx.item()] for idx in initial_samples_idx[i]])
+            initial_headers.append(f"chain_{i}")
+            initial_sequences.append(seq)
+        write_fasta(initial_chains_file, initial_headers, initial_sequences)
+        print(f"  ✓ Initial chains saved: {initial_chains_file}")
+
+        # Open mutation log file for streaming writes (checkpoint-based)
+        mutation_log_file = os.path.join(folder, "mutation_log.csv")
+        mutation_log_handle = open(mutation_log_file, "w")
+        mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
+        print(f"  ✓ Mutation log opened: {mutation_log_file}")
+        print(f"  ✓ Checkpoint interval: every {args.save_steps} iterations")
+
+        # Store previous checkpoint chains for comparison
+        prev_checkpoint_chains = samples.clone()
+
         # Main MCMC loop with convergence tracking
         t_evolution_start = time.time()
         for iteration in range(num_iterations):
             # Gibbs sampling step: update all positions
-            samples, mutation_info_tensor = sampler(chains=samples, params=params, beta=beta)
+            samples, _ = sampler(chains=samples, params=params, beta=beta)
             
+            # Checkpoint-based mutation tracking: write mutations every save_steps iterations
+            if save_mode == "periodic":
+                is_checkpoint = (iteration + 1) % save_steps_period == 0
+            else:
+                is_checkpoint = (iteration + 1) in save_steps_set
+            is_last_iteration = (iteration + 1) == num_iterations
+            
+            if is_checkpoint or is_last_iteration:
+                # Compare current chains with previous checkpoint
+                # Convert one-hot to indices for comparison
+                samples_idx = samples.argmax(dim=-1)  # Shape: (N, L)
+                prev_idx = prev_checkpoint_chains.argmax(dim=-1)
+                
+                # Find all positions that changed since last checkpoint
+                diff_mask = (samples_idx != prev_idx)
+                
+                # Write mutations to file (only changed positions)
+                for chain_id in range(N_chains):
+                    changed_positions = torch.where(diff_mask[chain_id])[0]
+                    for pos in changed_positions:
+                        pos_val = pos.item()
+                        new_aa_idx = samples_idx[chain_id, pos_val].item()
+                        new_aa_letter = tokens[new_aa_idx]
+                        mutation_log_handle.write(f"{iteration},{chain_id},{pos_val},{new_aa_letter}\n")
+                
+                # Update checkpoint
+                prev_checkpoint_chains = samples.clone()
+                mutation_log_handle.flush()
+
             # Periodic convergence monitoring
             if (iteration + 1) % 1_000 == 0:
                 elapsed = time.time() - t_evolution_start
@@ -247,6 +318,26 @@ def main():
             if iteration == 0:
                 first_time = time.time() - t_evolution_start
                 print(f"  ✓ First iteration completed ({first_time:.2f}s)")
+            
+            # Flush periodically to ensure data is written
+            if (iteration + 1) % 1_000 == 0:
+                mutation_log_handle.flush()
+
+        # Close mutation log file
+        mutation_log_handle.close()
+        print(f"  ✓ Mutation log saved: {mutation_log_file}")
+
+        # Save final chains
+        final_chains_file = os.path.join(folder, "final_chains.fasta")
+        final_samples_idx = samples.argmax(dim=-1) if samples.dim() == 3 else samples
+        final_headers = []
+        final_sequences = []
+        for i in range(final_samples_idx.shape[0]):
+            seq = "".join([tokens[idx.item()] for idx in final_samples_idx[i]])
+            final_headers.append(f"chain_{i}")
+            final_sequences.append(seq)
+        write_fasta(final_chains_file, final_headers, final_sequences)
+        print(f"  ✓ Final chains saved: {final_chains_file}")
 
         print(f"  ✓ Sampling completed")
         print(f"  Final Pearson correlation: {pearson:.4f}")
@@ -263,11 +354,68 @@ def main():
         print(f"  Sampler: Gibbs (JIT-compiled)")
         print(f"  Starting MCMC sampling...")
         
+        # ====================================================================
+        # Save initial chains before MCMC
+        # ====================================================================
+        initial_chains_file = os.path.join(folder, "initial_chains.fasta")
+        # Convert indices to amino acid letters
+        initial_samples_idx = samples.argmax(dim=-1) if samples.dim() == 3 else samples
+        initial_headers = []
+        initial_sequences = []
+        for i in range(initial_samples_idx.shape[0]):
+            seq = "".join([tokens[idx.item()] for idx in initial_samples_idx[i]])
+            initial_headers.append(f"chain_{i}")
+            initial_sequences.append(seq)
+        write_fasta(initial_chains_file, initial_headers, initial_sequences)
+        print(f"  ✓ Initial chains saved: {initial_chains_file}")
+
+        # Open mutation log file for streaming writes (checkpoint-based)
+        mutation_log_file = os.path.join(folder, "mutation_log.csv")
+        mutation_log_handle = open(mutation_log_file, "w")
+        mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
+        print(f"  ✓ Mutation log opened: {mutation_log_file}")
+        if save_mode == "periodic":
+            print(f"  ✓ Checkpoint interval: every {save_steps_period} iterations")
+        else:
+            print(f"  ✓ Checkpoint iterations: {save_steps_list}")
+
+        # Store previous checkpoint chains for comparison
+        prev_checkpoint_chains = samples.clone()
+
         t_evolution_start = time.time()
         for iteration in range(num_iterations):
             # Gibbs sampling step
-            samples, mutation_info_tensor = sampler(chains=samples, params=params, beta=beta)
+            samples, _ = sampler(chains=samples, params=params, beta=beta)
             
+            # Checkpoint-based mutation tracking: write mutations every save_steps iterations
+            if save_mode == "periodic":
+                is_checkpoint = (iteration + 1) % save_steps_period == 0
+            else:
+                is_checkpoint = (iteration + 1) in save_steps_set
+            is_last_iteration = (iteration + 1) == num_iterations
+            
+            if is_checkpoint or is_last_iteration:
+                # Compare current chains with previous checkpoint
+                # Convert one-hot to indices for comparison
+                samples_idx = samples.argmax(dim=-1)  # Shape: (N, L)
+                prev_idx = prev_checkpoint_chains.argmax(dim=-1)
+                
+                # Find all positions that changed since last checkpoint
+                diff_mask = (samples_idx != prev_idx)
+                
+                # Write mutations to file (only changed positions)
+                for chain_id in range(N_chains):
+                    changed_positions = torch.where(diff_mask[chain_id])[0]
+                    for pos in changed_positions:
+                        pos_val = pos.item()
+                        new_aa_idx = samples_idx[chain_id, pos_val].item()
+                        new_aa_letter = tokens[new_aa_idx]
+                        mutation_log_handle.write(f"{iteration},{chain_id},{pos_val},{new_aa_letter}\n")
+                
+                # Update checkpoint
+                prev_checkpoint_chains = samples.clone()
+                mutation_log_handle.flush()
+
             # Progress reporting every 1000 iterations
             if (iteration + 1) % 1_000 == 0:
                 elapsed = time.time() - t_evolution_start
@@ -278,6 +426,22 @@ def main():
             if iteration == 0:
                 first_time = time.time() - t_evolution_start
                 print(f"  ✓ First iteration completed ({first_time:.2f}s)")
+
+        # Close mutation log file
+        mutation_log_handle.close()
+        print(f"  ✓ Mutation log saved: {mutation_log_file}")
+
+        # Save final chains
+        final_chains_file = os.path.join(folder, "final_chains.fasta")
+        final_samples_idx = samples.argmax(dim=-1) if samples.dim() == 3 else samples
+        final_headers = []
+        final_sequences = []
+        for i in range(final_samples_idx.shape[0]):
+            seq = "".join([tokens[idx.item()] for idx in final_samples_idx[i]])
+            final_headers.append(f"chain_{i}")
+            final_sequences.append(seq)
+        write_fasta(final_chains_file, final_headers, final_sequences)
+        print(f"  ✓ Final chains saved: {final_chains_file}")
 
         print(f"  ✓ Sampling completed")
         print("-" * 80 + "\n")

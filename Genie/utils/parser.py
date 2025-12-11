@@ -84,9 +84,9 @@ def parse_arguments():
     
     parser.add_argument(
         '--save_steps',
-        type=int,
-        default=100,
-        help='Save checkpoint every N iterations to track mutations (default: 100)'
+        type=str,
+        default='100',
+        help='Save checkpoint every N iterations (int) or at specific iterations (comma-separated list, e.g., "100,500,1000"). Default: 100'
     )
     
     parser.add_argument(

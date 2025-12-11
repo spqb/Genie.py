@@ -327,7 +327,18 @@ def main():
     # Use JIT-compiled version if available for 2-3x speedup
     evolve_fn = evolve_sequences_compiled if COMPILE_AVAILABLE else evolve_sequences
     
-    
+    # ========================================================================
+    # Parse save_steps: can be int (periodic) or list (specific iterations)
+    # ========================================================================
+    if ',' in args.save_steps:
+        # Comma-separated list of specific iterations
+        save_steps_list = sorted([int(x.strip()) for x in args.save_steps.split(',')])
+        save_steps_set = set(save_steps_list)
+        save_mode = "list"
+    else:
+        # Single integer for periodic checkpoints
+        save_steps_period = int(args.save_steps)
+        save_mode = "periodic"
 
 
 
@@ -405,7 +416,10 @@ def main():
         mutation_log_handle = open(mutation_log_file, "w")
         mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
         print(f"  ✓ Mutation log opened: {mutation_log_file}")
-        print(f"  ✓ Checkpoint interval: every {args.save_steps} iterations")
+        if save_mode == "periodic":
+            print(f"  ✓ Checkpoint interval: every {save_steps_period} iterations")
+        else:
+            print(f"  ✓ Checkpoint iterations: {save_steps_list}")
 
         # Store previous checkpoint chains for comparison
         prev_checkpoint_chains = current_chains.clone()
@@ -442,7 +456,10 @@ def main():
             )
 
             # Checkpoint-based mutation tracking: write mutations every save_steps iterations
-            is_checkpoint = (iteration + 1) % args.save_steps == 0
+            if save_mode == "periodic":
+                is_checkpoint = (iteration + 1) % save_steps_period == 0
+            else:
+                is_checkpoint = (iteration + 1) in save_steps_set
             is_last_iteration = (iteration + 1) == num_iterations
             
             if is_checkpoint or is_last_iteration:
@@ -552,7 +569,10 @@ def main():
         mutation_log_handle = open(mutation_log_file, "w")
         mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
         print(f"  ✓ Mutation log opened: {mutation_log_file}")
-        print(f"  ✓ Checkpoint interval: every {args.save_steps} iterations")
+        if save_mode == "periodic":
+            print(f"  ✓ Checkpoint interval: every {save_steps_period} iterations")
+        else:
+            print(f"  ✓ Checkpoint iterations: {save_steps_list}")
 
         # Store previous checkpoint chains for comparison
         prev_checkpoint_chains = current_chains.clone()
@@ -590,7 +610,10 @@ def main():
             )
 
             # Checkpoint-based mutation tracking: write mutations every save_steps iterations
-            is_checkpoint = (iteration + 1) % args.save_steps == 0
+            if save_mode == "periodic":
+                is_checkpoint = (iteration + 1) % save_steps_period == 0
+            else:
+                is_checkpoint = (iteration + 1) in save_steps_set
             is_last_iteration = (iteration + 1) == num_iterations
             
             if is_checkpoint or is_last_iteration:

@@ -76,6 +76,13 @@ def parse_arguments():
     )
     
     parser.add_argument(
+        '--save_steps',
+        type=str,
+        default='100',
+        help='Save checkpoint every N iterations (int) or at specific iterations (comma-separated list, e.g., "100,500,1000"). Default: 100'
+    )
+    
+    parser.add_argument(
         "--alphabet",           
         type=str,   
         default="protein",    
