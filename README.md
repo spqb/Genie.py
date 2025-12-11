@@ -29,17 +29,16 @@ Genie 2.0 is a high-performance tool for generating protein sequences using Dire
 ## Features
 
 ### Core Capabilities
-- **GPU-Accelerated**: Full CUDA support with PyTorch JIT compilation (2-3x speedup)
 - **Codon-Aware Sampling**: Biologically realistic single-nucleotide mutations at DNA level
 - **Hybrid MCMC**: Combined Metropolis-Hastings and Gibbs sampling for better mixing
 - **Reference-Based**: Optional convergence tracking against real sequence data
+- **GPU-Accelerated**: Full CUDA support with PyTorch JIT compilation (2-3x speedup)
 - **Flexible Input**: Start from existing sequences or random initialization
 
 ### Technical Highlights
 - Fully vectorized GPU kernels with zero CPU loops
 - Pre-computed codon mutation networks for O(1) neighbor lookups
 - Batched random number generation for improved GPU efficiency
-- Masked operations eliminate branching overhead
 - Real-time Pearson correlation tracking for convergence monitoring
 
 ---
@@ -56,7 +55,7 @@ Genie 2.0 is a high-performance tool for generating protein sequences using Dire
 ```bash
 git clone https://github.com/yourusername/Genie.py.git
 cd Genie.py
-pip install -e .
+pip install .
 ```
 
 This installs two command-line tools:
@@ -67,133 +66,162 @@ This installs two command-line tools:
 
 ## Quick Start
 
-### 1. Sample from a DCA Model (Codon-Aware)
+### Codon-Aware Evolution
 
 ```bash
-genie \
-  -p params.dat \
-  -n 1000 \
-  --num_iterations 50000 \
-  -o output_folder
+genie -p params.dat -n 1000 --num_iterations 50000 -o output_folder
 ```
 
-### 2. Sample with Reference Data Tracking
+### Amino Acid Evolution
 
 ```bash
-genie \
-  -d reference_data.fasta \
-  -p params.dat \
-  -n 1000 \
-  --num_iterations 100000 \
-  -o output_folder
-```
-
-### 3. Amino Acid-Only Sampling
-
-```bash
-genie-aa \
-  -p params.dat \
-  -n 1000 \
-  --num_iterations 50000 \
-  -o output_folder
+genie-aa -p params.dat -n 1000 --num_iterations 50000 -o output_folder
 ```
 
 ---
 
 ## Usage
 
-### Genie (Codon Evolution)
+### Genie (Codon-Aware Evolution)
 
-**Basic Sampling:**
 ```bash
-genie -p <params.dat> -n <num_sequences> --num_iterations <iterations> -o <output_dir>
-```
+# Generate sequences from scratch
+genie -p params.dat -n 1000 --num_iterations 50000 -o results/
 
-**With Initial Sequences:**
-```bash
-genie -c <init_sequences.fasta> -p <params.dat> -n 500 --num_iterations 100000 -o results/
-```
-
-**With Reference Data:**
-```bash
-genie -d <reference.fasta> -p <params.dat> -n 1000 --num_iterations 100000 -o results/
-```
-
-**Replicate Single Sequence:**
-```bash
-genie -c <sequences.fasta> --seq_index 42 -n 1000 --num_iterations 50000 -o results/
+# Start from existing sequences
+genie -c init_sequences.fasta -p params.dat --num_iterations 50000 -o results/
 ```
 
 ### Genie-AA (Amino Acid Evolution)
 
-**Basic Sampling:**
 ```bash
-genie-aa -p <params.dat> -n <num_sequences> --num_iterations <iterations> -o <output_dir>
+# Generate sequences from scratch
+genie-aa -p params.dat -n 1000 --num_iterations 50000 -o results/
+
+# Start from existing sequences
+genie-aa -c init_sequences.fasta -p params.dat --num_iterations 50000 -o results/
 ```
 
-**With Reference Tracking:**
+### Reconstruction Tools
+
 ```bash
-genie-aa -d <reference.fasta> -p <params.dat> -n 1000 --num_iterations 100000 -o results/
+# Reconstruct final sequences from mutation log
+reconstruct_chains results/
+
+# Reconstruct sequences at specific timesteps
+reconstruct_at_timesteps results/ --timesteps "0,100,500,1000"
+```
+
+### Python API
+
+```python
+from Genie import reconstruct_at_timesteps, reconstruct_chains_from_log
+from adabmDCA.fasta import get_tokens
+
+# Reconstruct sequences at specific timesteps
+sequences = reconstruct_at_timesteps(
+    initial_chains_file="results/initial_chains.fasta",
+    mutation_log_file="results/mutation_log.csv",
+    timesteps=[0, 100, 500, 1000],
+    alphabet="protein"
+)
+# Returns: torch.Tensor of shape (len(timesteps), n_chains, L)
+
+# Reconstruct and validate final sequences
+tokens = get_tokens(alphabet="protein")
+reconstructed_seqs, headers = reconstruct_chains_from_log(
+    initial_chains_file="results/initial_chains.fasta",
+    mutation_log_file="results/mutation_log.csv",
+    tokens=tokens
+)
 ```
 
 ---
 
 ## Command-Line Arguments
 
-### Common Arguments (Both Tools)
+### Required Arguments
 
-| Argument | Short | Required | Default | Description |
-|----------|-------|----------|---------|-------------|
-| `--path_params` | `-p` | Yes | - | DCA model parameters file (.dat) |
-| `--num_chains` | `-n` | Yes* | - | Number of sequences to generate |
-| `--num_iterations` | | Yes | - | Number of MCMC iterations |
-| `--output` | `-o` | Yes | - | Output directory path |
-| `--path_chains` | `-c` | No | None | Initial sequences (FASTA) |
-| `--data` | `-d` | No | None | Reference data for convergence tracking |
-| `--seq_index` | | No | None | Index of sequence to replicate (with `-c`) |
-| `--device` | | No | auto | Device: 'cuda' or 'cpu' |
-| `--dtype` | | No | float32 | Data type: float32 or float64 |
-| `--alphabet` | | No | protein | Alphabet type (genie-aa only) |
+| Argument | Short | Description |
+|----------|-------|-------------|
+| `--path_params` | `-p` | DCA model parameters file (.dat) |
+| `--num_iterations` | | Number of MCMC iterations |
 
-### Genie-Specific Arguments
+### Optional Arguments
 
 | Argument | Short | Default | Description |
 |----------|-------|---------|-------------|
-| `--p_metropolis` | | 0.5 | Metropolis vs Gibbs ratio (0-1) |
+| `--output` | `-o` | `DCA_evolution` | Output directory |
+| `--num_chains` | `-n` | None | Number of sequences (required if not using `-c`) |
+| `--path_chains` | `-c` | None | Initial sequences (FASTA format) |
+| `--seq_index` | | None | Replicate single sequence from `-c` file |
+| `--save_steps` | | `100` | Checkpoint interval or comma-separated list (e.g., "100,500,1000") |
+| `--device` | | auto | Device: 'cuda' or 'cpu' |
+| `--dtype` | | float32 | Data type: float32 or float64 |
 
-**Note:** When using `--path_chains`, `--num_chains` is optional (uses all loaded sequences if not specified)
+### Genie-Specific Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--p_metropolis` | 0.5 | Metropolis vs Gibbs ratio (0.0-1.0) |
+
+### Genie-AA Specific Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--alphabet` | protein | Alphabet type: 'protein', 'rna', 'dna', or custom |
+
+### Reconstruction Tool Arguments
+
+**reconstruct_chains**: Takes output folder as positional argument
+
+**reconstruct_at_timesteps**: 
+- `folder` - Output folder (positional)
+- `--timesteps` - Comma-separated list (e.g., "0,100,500,1000")
 
 ---
 
 ## Output Files
 
-### Sampling Log (if reference data provided)
+All files are saved in the output directory specified by `-o`.
 
-**File:** `sampling.log`
+### Generated Files
 
-CSV file with convergence metrics:
+| File | Description |
+|------|-------------|
+| `initial_chains.fasta` | Starting sequences (before evolution) |
+| `final_chains.fasta` | Final sequences (after all iterations) |
+| `mutation_log.csv` | Log of all mutations at checkpoints |
+
+### Mutation Log Format
+
+**File:** `mutation_log.csv`
+
+CSV file tracking mutations at checkpoints:
 
 | Column | Description |
 |--------|-------------|
-| `iteration` | MCMC iteration number |
-| `pearson` | Pearson correlation with reference data |
+| `iteration` | Checkpoint iteration number |
+| `chain_id` | Sequence identifier |
+| `position` | Position in sequence (0-indexed) |
+| `new_aa` | New amino acid at this position |
 
 **Example:**
 ```csv
-iteration,pearson
-1000,0.8234
-2000,0.8567
-3000,0.8823
+iteration,chain_id,position,new_aa
+100,seq_0,15,A
+100,seq_0,42,G
+100,seq_1,23,L
+200,seq_0,15,V
 ...
 ```
 
 ### Console Output
 
-Real-time progress with:
-- Iterations per second
-- Pearson correlation (if reference data)
-- Gap frequency statistics (if reference data)
-- Total execution time
+Real-time progress showing:
+- Iteration number and speed (iter/sec)
+- Elapsed time
+- Compilation status (first iteration)
 
 ---
 
@@ -245,41 +273,49 @@ adabmDCA>=1.0.0
 
 ## Examples
 
-### Generate 10,000 Sequences
+### Basic Evolution
 
 ```bash
-genie \
-  -p example_data/pf76/params.dat \
-  -n 10000 \
-  --num_iterations 100000 \
-  -o results/pf76_10k
+# Generate 1000 sequences with codon awareness
+genie -p example_data/pf76/params.dat -n 1000 --num_iterations 50000 -o results/pf76
+
+# Generate amino acid sequences only
+genie-aa -p example_data/pf76/params.dat -n 1000 --num_iterations 50000 -o results/pf76_aa
 ```
 
-### Track Convergence Against Real Data
+### Custom Checkpoints
 
 ```bash
-genie \
-  -d example_data/pf76/PF00076_mgap6.fasta \
-  -p example_data/pf76/params.dat \
-  -n 5000 \
-  --num_iterations 200000 \
-  -o results/pf76_convergence
+# Save mutations at specific iterations
+genie -p params.dat -n 1000 --num_iterations 10000 --save_steps "100,500,1000,5000,10000" -o results/
+
+# Reconstruct sequences at those timesteps
+reconstruct_at_timesteps results/ --timesteps "0,100,500,1000,5000,10000"
 ```
 
 ---
 
 ## Citation
 
-If you use Genie 2.0 in your research, please cite:
+This software is based on the following article:
 
 ```bibtex
-@software{genie2024,
-  title={Genie 2.0: GPU-Accelerated Codon-Aware Sequence Evolution},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/yourusername/Genie.py}
+@article{
+doi:10.1073/pnas.2406807121,
+author = {Leonardo Di Bari  and Matteo Bisardi  and Sabrina Cotogno  and Martin Weigt  and Francesco Zamponi },
+title = {Emergent time scales of epistasis in protein evolution},
+journal = {Proceedings of the National Academy of Sciences},
+volume = {121},
+number = {40},
+pages = {e2406807121},
+year = {2024},
+doi = {10.1073/pnas.2406807121},
+URL = {https://www.pnas.org/doi/abs/10.1073/pnas.2406807121},
+eprint = {https://www.pnas.org/doi/pdf/10.1073/pnas.2406807121},
 }
 ```
+
+A Julia version of Genie is also available: [Genie.jl](https://github.com/spqb/Genie.jl)
 
 ---
 
