@@ -45,15 +45,16 @@ Genie 2.0 is a high-performance tool for generating protein sequences using Dire
 
 ## Installation
 
-### Prerequisites
-- Python 3.8+
-- PyTorch 2.0+ with CUDA support (recommended) or CPU
-- adabmDCA library
-
-### Install from Source
+### From PyPI (Recommended)
 
 ```bash
-git clone https://github.com/yourusername/Genie.py.git
+pip install genie-dca
+```
+
+### From Source
+
+```bash
+git clone https://github.com/spqb/Genie.py.git
 cd Genie.py
 pip install .
 ```
