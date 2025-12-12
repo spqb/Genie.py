@@ -87,6 +87,29 @@ def reconstruct_at_timesteps(
     # Sort by iteration to apply mutations in order
     df_mutations = df_mutations.sort_values('iteration')
     
+    # Validate that requested timesteps are available in mutation log
+    # Note: mutation log saves iterations 0-indexed, so iteration N is saved as N-1
+    available_timesteps_in_log = sorted(df_mutations['iteration'].unique())
+    available_timesteps = [t + 1 for t in available_timesteps_in_log]  # Convert to 1-indexed
+    requested_timesteps = sorted(set(timesteps))
+    
+    # Remove timestep 0 from validation (it's the initial state, always available)
+    timesteps_to_check = [t for t in requested_timesteps if t > 0]
+    
+    # Check if all requested timesteps (except 0) are in mutation log
+    missing_timesteps = [t for t in timesteps_to_check if t not in available_timesteps]
+    
+    if missing_timesteps:
+        available_str = ", ".join(map(str, available_timesteps[:10]))
+        if len(available_timesteps) > 10:
+            available_str += f", ... ({len(available_timesteps)} total)"
+        raise ValueError(
+            f"Requested timesteps {missing_timesteps} are not available in mutation log.\n"
+            f"Available timesteps in mutation log: {available_str}\n"
+            f"Note: Timestep 0 (initial state) is always available without being in the log.\n"
+            f"Note: Mutation log saves iteration N as N-1 (0-indexed)."
+        )
+    
     # Ensure timesteps are sorted and include 0 if initial state is requested
     timesteps_sorted = sorted(set(timesteps))
     
@@ -116,7 +139,7 @@ def reconstruct_at_timesteps(
     
     while mutation_idx < total_mutations and timestep_idx < len(timesteps_sorted):
         row = df_mutations.iloc[mutation_idx]
-        mutation_iteration = int(row['iteration'])
+        mutation_iteration = int(row['iteration']) + 1  # Convert from 0-indexed to 1-indexed
         
         # Check if we've reached the next timestep
         if mutation_iteration > current_timestep:
