@@ -8,6 +8,7 @@ realism is not required.
 import argparse
 import os
 import sys
+import csv
 import pandas as pd
 import torch
 import time
@@ -266,8 +267,9 @@ def main():
 
         # Open mutation log file for streaming writes (checkpoint-based)
         mutation_log_file = os.path.join(folder, "mutation_log.csv")
-        mutation_log_handle = open(mutation_log_file, "w")
-        mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
+        mutation_log_handle = open(mutation_log_file, "w", newline='')
+        mutation_log_writer = csv.writer(mutation_log_handle)
+        mutation_log_writer.writerow(["iteration", "chain_id", "position", "new_aa"])
         print(f"  ✓ Mutation log opened: {mutation_log_file}")
         print(f"  ✓ Checkpoint interval: every {args.save_steps} iterations")
 
@@ -303,7 +305,7 @@ def main():
                         pos_val = pos.item()
                         new_aa_idx = samples_idx[chain_id, pos_val].item()
                         new_aa_letter = tokens[new_aa_idx]
-                        mutation_log_handle.write(f"{iteration},{chain_id},{pos_val},{new_aa_letter}\n")
+                        mutation_log_writer.writerow([iteration, chain_id, pos_val, new_aa_letter])
                 
                 # Update checkpoint
                 prev_checkpoint_chains = samples.clone()
@@ -380,8 +382,9 @@ def main():
 
         # Open mutation log file for streaming writes (checkpoint-based)
         mutation_log_file = os.path.join(folder, "mutation_log.csv")
-        mutation_log_handle = open(mutation_log_file, "w")
-        mutation_log_handle.write("iteration,chain_id,position,new_aa\n")
+        mutation_log_handle = open(mutation_log_file, "w", newline='')
+        mutation_log_writer = csv.writer(mutation_log_handle)
+        mutation_log_writer.writerow(["iteration", "chain_id", "position", "new_aa"])
         print(f"  ✓ Mutation log opened: {mutation_log_file}")
         if save_mode == "periodic":
             print(f"  ✓ Checkpoint interval: every {save_steps_period} iterations")
@@ -419,7 +422,7 @@ def main():
                         pos_val = pos.item()
                         new_aa_idx = samples_idx[chain_id, pos_val].item()
                         new_aa_letter = tokens[new_aa_idx]
-                        mutation_log_handle.write(f"{iteration},{chain_id},{pos_val},{new_aa_letter}\n")
+                        mutation_log_writer.writerow([iteration, chain_id, pos_val, new_aa_letter])
                 
                 # Update checkpoint
                 prev_checkpoint_chains = samples.clone()
