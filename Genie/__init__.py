@@ -11,7 +11,7 @@ from .utils import (
 # Import reconstruction functions from scripts
 from scripts import reconstruct_at_timesteps, reconstruct_chains_from_log
 
-__version__ = "2.0.0"
+__version__ = "2.0.2"
 __all__ = [
     "main",
     "evolve_sequences",
@@ -22,5 +22,4 @@ __all__ = [
     "reconstruct_at_timesteps",
     "reconstruct_chains_from_log"
 ]
-
 
