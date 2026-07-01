@@ -5,7 +5,11 @@ This function takes initial chains and mutation log, and returns a tensor
 containing the sequences at specified timesteps.
 
 Usage:
-    from scripts.reconstruct_at_timesteps import reconstruct_at_timesteps
+    from scripts.reconstruct_at_timesteps import (
+        reconstruct_at_timesteps,
+        save_reconstructed_timesteps_fasta,
+    )
+    from adabmDCA.fasta import get_tokens, import_from_fasta
     
     sequences = reconstruct_at_timesteps(
         initial_chains_file="path/to/initial_chains.fasta",
@@ -15,12 +19,20 @@ Usage:
     )
     
     # sequences.shape: (len(timesteps), n_chains, L)
+    tokens = get_tokens("protein")
+    headers, _ = import_from_fasta("path/to/initial_chains.fasta", tokens, filter_sequences=True)
+    save_reconstructed_timesteps_fasta(
+        sequences_tensor=sequences,
+        timesteps=[0, 100, 500, 1000],
+        headers=headers,
+        output_dir="path/to/reconstructed_timesteps",
+        alphabet="protein"
+    )
 """
+import torch
 import os
 import pandas as pd
-import torch
-import numpy as np
-from adabmDCA.fasta import import_from_fasta, get_tokens
+from adabmDCA.fasta import import_from_fasta, get_tokens, write_fasta
 
 
 def reconstruct_at_timesteps(
@@ -180,6 +192,56 @@ def reconstruct_at_timesteps(
     return output_tensor
 
 
+def save_reconstructed_timesteps_fasta(
+    sequences_tensor: torch.Tensor,
+    timesteps: list,
+    headers: list,
+    output_dir: str,
+    alphabet: str = "protein"
+) -> list:
+    """
+    Save reconstructed timestep tensors as one FASTA file per timestep.
+
+    Args:
+        sequences_tensor: Tensor of shape (len(timesteps), n_chains, L)
+        timesteps: Timesteps corresponding to the first tensor dimension
+        headers: FASTA headers in the same chain order as sequences_tensor
+        output_dir: Directory where FASTA files will be written
+        alphabet: Alphabet type (default: "protein")
+
+    Returns:
+        List of written FASTA file paths.
+    """
+    tokens = get_tokens(alphabet)
+    os.makedirs(output_dir, exist_ok=True)
+
+    if sequences_tensor.shape[0] != len(timesteps):
+        raise ValueError(
+            f"Expected one tensor slice per timestep, got "
+            f"{sequences_tensor.shape[0]} slices and {len(timesteps)} timesteps."
+        )
+
+    if sequences_tensor.shape[1] != len(headers):
+        raise ValueError(
+            f"Expected one header per chain, got "
+            f"{len(headers)} headers and {sequences_tensor.shape[1]} chains."
+        )
+
+    headers = [str(header) for header in headers]
+    written_files = []
+
+    for timestep_idx, timestep in enumerate(timesteps):
+        sequences = [
+            "".join(tokens[idx.item()] for idx in sequences_tensor[timestep_idx, chain_idx])
+            for chain_idx in range(sequences_tensor.shape[1])
+        ]
+        output_file = os.path.join(output_dir, f"reconstructed_t{timestep}.fasta")
+        write_fasta(output_file, headers, sequences)
+        written_files.append(output_file)
+
+    return written_files
+
+
 def main():
     """Command-line interface for testing."""
     import argparse
@@ -210,11 +272,22 @@ def main():
         default=None,
         help="Output file to save tensor (optional, .pt format)"
     )
+    parser.add_argument(
+        "--save-fasta",
+        action="store_true",
+        help="Save one FASTA file per requested timestep"
+    )
+    parser.add_argument(
+        "--fasta-output-dir",
+        type=str,
+        default=None,
+        help="Directory for reconstructed FASTA files (default: <output_folder>/reconstructed_timesteps)"
+    )
     
     args = parser.parse_args()
     
     # Parse timesteps
-    timesteps = [int(x.strip()) for x in args.timesteps.split(',')]
+    timesteps = sorted(set(int(x.strip()) for x in args.timesteps.split(',')))
     
     # Get file paths
     initial_chains_file = os.path.join(args.output_folder, "initial_chains.fasta")
@@ -249,6 +322,22 @@ def main():
     if args.output is not None:
         torch.save(sequences_tensor, args.output)
         print(f"  Saved to: {args.output}")
+
+    if args.save_fasta:
+        headers, _ = import_from_fasta(initial_chains_file, get_tokens(args.alphabet), filter_sequences=True)
+        fasta_output_dir = args.fasta_output_dir
+        if fasta_output_dir is None:
+            fasta_output_dir = os.path.join(args.output_folder, "reconstructed_timesteps")
+        written_files = save_reconstructed_timesteps_fasta(
+            sequences_tensor=sequences_tensor,
+            timesteps=timesteps,
+            headers=headers,
+            output_dir=fasta_output_dir,
+            alphabet=args.alphabet
+        )
+        print(f"  Saved FASTA files to: {fasta_output_dir}")
+        for path in written_files:
+            print(f"    {path}")
     
     # Show a sample
     print(f"\nSample (first chain, first 10 positions at each timestep):")
