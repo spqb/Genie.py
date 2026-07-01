@@ -111,13 +111,17 @@ reconstruct_chains results/
 
 # Reconstruct sequences at specific timesteps
 reconstruct_at_timesteps results/ --timesteps "0,100,500,1000"
+
+# Reconstruct timesteps and save one FASTA file per timestep
+reconstruct_at_timesteps results/ --timesteps "0,100,500,1000" --save-fasta
 ```
 
 ### Python API
 
 ```python
-from Genie import reconstruct_at_timesteps, reconstruct_chains_from_log
-from adabmDCA.fasta import get_tokens
+from scripts import reconstruct_at_timesteps, save_reconstructed_timesteps_fasta
+from Genie import reconstruct_chains_from_log
+from adabmDCA.fasta import get_tokens, import_from_fasta
 
 # Reconstruct sequences at specific timesteps
 sequences = reconstruct_at_timesteps(
@@ -128,8 +132,18 @@ sequences = reconstruct_at_timesteps(
 )
 # Returns: torch.Tensor of shape (len(timesteps), n_chains, L)
 
-# Reconstruct and validate final sequences
+# Save one FASTA file per reconstructed timestep
 tokens = get_tokens(alphabet="protein")
+headers, _ = import_from_fasta("results/initial_chains.fasta", tokens, filter_sequences=True)
+save_reconstructed_timesteps_fasta(
+    sequences_tensor=sequences,
+    timesteps=[0, 100, 500, 1000],
+    headers=headers,
+    output_dir="results/reconstructed_timesteps",
+    alphabet="protein"
+)
+
+# Reconstruct and validate final sequences
 reconstructed_seqs, headers = reconstruct_chains_from_log(
     initial_chains_file="results/initial_chains.fasta",
     mutation_log_file="results/mutation_log.csv",
@@ -179,6 +193,9 @@ reconstructed_seqs, headers = reconstruct_chains_from_log(
 **reconstruct_at_timesteps**: 
 - `folder` - Output folder (positional)
 - `--timesteps` - Comma-separated list (e.g., "0,100,500,1000")
+- `--output` - Optional `.pt` file for saving the reconstructed tensor
+- `--save-fasta` - Save one FASTA file per requested timestep
+- `--fasta-output-dir` - Optional FASTA output directory (default: `<folder>/reconstructed_timesteps`)
 
 ---
 
@@ -292,6 +309,12 @@ genie -p params.dat -n 1000 --num_iterations 10000 --save_steps "100,500,1000,50
 
 # Reconstruct sequences at those timesteps
 reconstruct_at_timesteps results/ --timesteps "0,100,500,1000,5000,10000"
+
+# Also save inspectable FASTA files:
+# results/reconstructed_timesteps/reconstructed_t0.fasta
+# results/reconstructed_timesteps/reconstructed_t100.fasta
+# ...
+reconstruct_at_timesteps results/ --timesteps "0,100,500,1000,5000,10000" --save-fasta
 ```
 
 ---
